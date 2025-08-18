@@ -1,0 +1,108 @@
+# Financial Transaction Transformation - ML Backend Environment Configuration
+
+# ======================
+# LLM Service Configuration (Simplified)
+# ======================
+# Choose your LLM provider: openai or jpmcllm
+LLM_PROVIDER=openai
+
+# ---- OpenAI Configuration ----
+# Required for OpenAI provider
+OPENAI_API_KEY=your-openai-api-key-here
+OPENAI_MODEL=gpt-4
+OPENAI_TEMPERATURE=0.3
+OPENAI_MAX_TOKENS=2000
+
+# ---- JPMC LLM Configuration ----
+# Internal JPMC LLM service (no API key required)
+# Uses simplified JSON format:
+# Request: {"Message": "combined_message_string"}
+# Response: {"Message": "ai_response", ...other_details}
+JPMC_LLM_URL=http://localhost:8080
+JPMC_LLM_MODEL=jpmc-llm-v1
+JPMC_LLM_TEMPERATURE=0.3
+JPMC_LLM_MAX_TOKENS=2000
+JPMC_LLM_TIMEOUT=30
+
+# ======================
+# Application Settings
+# ======================
+APP_NAME='Financial Data Extraction API'
+VERSION=1.0.0
+DEBUG=True
+SECRET_KEY=change-this-secret-key-in-production
+
+# ======================
+# Server Configuration
+# ======================
+HOST=0.0.0.0
+PORT=8000
+
+# ======================
+# File Processing
+# ======================
+TEMP_DIR=/tmp
+BATCH_SIZE=100
+MAX_ROWS_PER_FILE=1000000
+
+# ======================
+# File Upload Settings
+# ======================
+MAX_FILE_SIZE=500
+# Maximum file size in MB (increased for large files)
+LARGE_FILE_THRESHOLD=100000
+# Threshold for considering a file "large" (in rows)
+
+# ======================
+# Preview and Sample Settings
+# ======================
+MAX_SAMPLE_ROWS=100
+# Maximum rows to show in file info samples
+MAX_PREVIEW_ROWS=1000
+# Maximum rows allowed in preview endpoint
+
+# ======================
+# CORS Settings
+# ======================
+ALLOWED_HOSTS=*
+# Use specific domains in production, e.g., http://localhost:3000,https://yourdomain.com
+
+# ======================
+# Storage Configuration
+# ======================
+# Options: 'local' or 's3'
+STORAGE_TYPE=local
+# S3_BUCKET_NAME=your-s3-bucket-name
+# S3_PREFIX=financial-data-storage
+# AWS_REGION=us-east-1
+
+# ======================
+# Database Settings
+# ======================
+DATABASE_URL=sqlite:///./app.db
+
+# ======================
+# Logging
+# ======================
+LOG_LEVEL=INFO
+# Options: TRACE, DEBUG, INFO, WARNING, ERROR
+
+# ======================
+# Performance Settings
+# ======================
+CHUNK_SIZE=10000
+# For processing very large files in chunks (future use)
+MEMORY_LIMIT_GB=4
+# Memory limit warning threshold
+
+# ======================
+# Telemetry
+# ======================
+ANONYMIZED_TELEMETRY=False
+CHROMA_SERVER_NOFILE=1
+
+# ======================
+# Optional Overrides
+# ======================
+# Override model for any provider
+# LLM_MODEL=custom-model-name

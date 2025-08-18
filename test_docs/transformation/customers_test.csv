@@ -1,0 +1,11 @@
+Customer_ID,First_Name,Last_Name,Email,Phone,Date_Joined,Account_Type,Balance,Status,Region,City,Age,Gender,Membership_Level,Last_Login
+CUST001,John,Smith,john.smith@email.com,555-0101,2024-01-15,Premium,15000.50,Active,North,New York,35,M,Gold,2024-01-20
+CUST002,Mary,Johnson,mary.j@email.com,555-0102,2024-01-16,Standard,2500.75,Active,South,Atlanta,28,F,Silver,2024-01-21
+CUST003,Robert,Brown,r.brown@email.com,555-0103,2024-01-17,Basic,750.00,Inactive,East,Boston,42,M,Bronze,2024-01-18
+CUST004,Lisa,Davis,lisa.davis@email.com,555-0104,2024-01-18,Premium,25000.00,Active,West,Los Angeles,31,F,Platinum,2024-01-22
+CUST005,Michael,Wilson,m.wilson@email.com,555-0105,2024-01-19,Standard,5000.25,Active,Central,Chicago,29,M,Silver,2024-01-23
+CUST006,Sarah,Taylor,sarah.t@email.com,555-0106,2024-01-20,Basic,1200.00,Suspended,North,Seattle,26,F,Bronze,2024-01-19
+CUST007,David,Anderson,d.anderson@email.com,555-0107,2024-01-21,Premium,18500.75,Suspended,South,Miami,38,M,Gold,2024-01-21
+CUST008,Jennifer,Thomas,j.thomas@email.com,555-0108,2024-01-22,Standard,3200.50,Active,East,Philadelphia,33,F,Silver,2024-01-24
+CUST009,Christopher,Jackson,c.jackson@email.com,555-0109,2024-01-23,Basic,950.25,Active,West,San Francisco,27,M,Bronze,2024-01-25
+CUST010,Amanda,White,a.white@email.com,555-0110,2024-01-24,Premium,22000.00,Active,Central,Dallas,36,F,Platinum,2024-01-26

@@ -1,0 +1,12 @@
+Product_Code,Product_Name,Category,Subcategory,Brand,Cost_Price,Retail_Price,Supplier,Stock_Quantity,Reorder_Level,Weight_Kg,Dimensions,Color,Material,Warranty_Months
+PROD001,Laptop Pro,Electronics,Computers,TechBrand,999.99,1299.99,Supplier A,15,5,2.1,35x25x2cm,Silver,Aluminum,24
+PROD002,Office Chair,Furniture,Seating,ComfortPlus,199.99,299.50,Supplier B,25,10,12.5,65x65x120cm,Black,Leather,12
+PROD003,Coffee Maker,Appliances,Kitchen,BrewMaster,59.99,89.99,Supplier C,30,8,3.2,25x30x35cm,White,Plastic,6
+PROD004,Smartphone,Electronics,Mobile,PhoneCorp,649.99,899.00,Supplier A,20,7,0.18,15x7x0.8cm,Blue,Glass,12
+PROD005,Desk Lamp,Furniture,Lighting,BrightLight,15.99,22.88,Supplier D,50,15,1.2,20x20x45cm,White,Metal,6
+PROD006,Notebook Set,Stationery,Writing,PaperCo,5.99,8.33,Supplier E,100,25,0.5,21x15x2cm,Mixed,Paper,0
+PROD007,Tablet,Electronics,Computers,TechBrand,399.99,549.99,Supplier A,12,4,0.55,25x18x0.7cm,Gray,Aluminum,12
+PROD008,Ergonomic Mouse,Electronics,Accessories,TechBrand,49.99,79.99,Supplier A,40,12,0.15,12x7x4cm,Black,Plastic,12
+PROD009,Water Bottle,Accessories,Drinkware,HydroLife,7.99,9.99,Supplier F,75,20,0.25,25x8x8cm,Blue,Steel,0
+PROD010,Monitor,Electronics,Computers,TechBrand,299.99,449.99,Supplier A,18,6,4.5,60x40x8cm,Black,Plastic,24
+PROD011,Printer,Electronics,Office,PrintTech,149.99,199.99,Supplier G,8,3,6.8,40x35x15cm,White,Plastic,12

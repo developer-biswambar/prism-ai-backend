@@ -1,0 +1,6 @@
+Trade ID,Description,Amount,Date,Comments
+TRD001,"US0378331005 Apple Inc. Amount: $1,500,000 Currency: Dollar Trade Ref: TX001",1500000,2024-01-10,"Settlement: T+2 Counterparty: Goldman Sachs"
+TRD002,"Security: MSFT CUSIP: 594918104 Amount: €750,000 Currency: EUR",750000,2024-01-11,"Account: MAIN-001 Trader: John Smith"
+TRD003,"Trade Ref: TX123456 Amount: £2,000,000 Settlement: 2024-01-15 ISIN: GB0002634946",2000000,2024-01-12,"Portfolio: EQUITY-UK Counterparty: Barclays T+2 days maybe"
+TRD004,"Tesla Inc TSLA Amount: $850,000 USD ISIN: US88160R1014",850000,2024-01-13,"Long position opened"
+TRD005,"Bond Trade ISIN: US912828XM14 Amount: $5,000,000 Maturity: 2034-01-15",5000000,2024-01-14,"US Treasury Bond"

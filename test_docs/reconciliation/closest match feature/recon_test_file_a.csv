@@ -1,0 +1,11 @@
+transaction_id,customer_name,amount,date,account_number,description
+TXN001,John Smith,1000.50,2024-01-15,ACC123456,Payment for services
+TXN002,Jane Doe,2500.00,2024-01-16,ACC234567,Salary deposit
+TXN003,Bob Johnson,750.25,2024-01-17,ACC345678,Refund processing
+TXN004,Alice Brown,1200.00,2024-01-18,ACC456789,Invoice payment
+TXN005,Charlie Davis,3000.75,2024-01-19,ACC567890,Contract payment
+TXN006,Eva Wilson,500.00,2024-01-20,ACC678901,Utility payment
+TXN007,Frank Miller,1800.30,2024-01-21,ACC789012,Equipment purchase
+TXN008,Grace Taylor,950.50,2024-01-22,ACC890123,Consulting fees
+TXN009,Henry Clark,2200.00,2024-01-23,ACC901234,Software license
+TXN010,Ivy Rodriguez,675.75,2024-01-24,ACC012345,Travel expenses

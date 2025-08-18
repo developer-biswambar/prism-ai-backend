@@ -1,0 +1,132 @@
+[tool.poetry]
+name = "ftt-ml-backend"
+version = "1.0.0"
+description = "Financial Data Transformation Platform - Backend API"
+authors = ["FTT-ML Team <team@ftt-ml.com>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+python-multipart = "^0.0.6"
+aiofiles = "^23.2.1"
+openai = "^1.35.12"
+pandas = "^2.1.3"
+openpyxl = "^3.1.2"
+xlrd = "^2.0.1"
+httpx = "^0.25.2"
+requests = "^2.31.0"
+structlog = "^23.2.0"
+boto3 = "^1.34.0"
+botocore = "^1.34.0"
+xlsxwriter = "^3.1.9"
+python-dotenv = "^1.0.0"
+chromadb = "^0.4.18"
+sentence-transformers = "^2.2.2"
+numpy = "^1.24.3"
+rapidfuzz = "^3.5.2"
+waitress = "^2.1.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+pytest-cov = "^4.1.0"
+black = "^23.11.0"
+isort = "^5.12.0"
+flake8 = "^6.1.0"
+mypy = "^1.7.0"
+pre-commit = "^3.5.0"
+bandit = "^1.7.5"
+safety = "^2.3.0"
+
+[tool.poetry.group.test.dependencies]
+pytest-xdist = "^3.5.0"
+pytest-mock = "^3.12.0"
+httpx = "^0.25.2"
+faker = "^20.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 100
+known_first_party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["test"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "file_upload: marks tests for file upload functionality",
+    "excel: marks tests for Excel file processing",
+    "csv: marks tests for CSV file processing",
+    "error: marks tests for error handling",
+    "validation: marks tests for data validation",
+    "viewer: marks tests for data viewer functionality",
+    "reconciliation: marks tests for reconciliation features",
+    "transformation: marks tests for data transformation",
+    "delta: marks tests for delta generation",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "*/test/*",
+    "*/__pycache__/*",
+    "*/migrations/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.bandit]
+exclude_dirs = ["test", "tests"]
+skips = ["B101", "B601"]

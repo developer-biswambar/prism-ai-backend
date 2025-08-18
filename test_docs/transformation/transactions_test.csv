@@ -1,0 +1,13 @@
+Transaction_ID,Customer_ID,Product_Code,Product_Name,Category,Transaction_Date,Amount,Quantity,Unit_Price,Discount_Percent,Payment_Method,Channel,Sales_Rep,Transaction_Type,Currency
+TXN001,CUST001,PROD001,Laptop Pro,Electronics,2024-01-20,1299.99,1,1299.99,0,Credit Card,Online,REP001,Purchase,USD
+TXN002,CUST002,PROD002,Office Chair,Furniture,2024-01-21,299.50,1,299.50,10,Debit Card,Store,REP002,Purchase,USD
+TXN003,CUST003,PROD003,Coffee Maker,Appliances,2024-01-18,89.99,1,89.99,5,Cash,Store,REP003,Purchase,USD
+TXN004,CUST004,PROD004,Smartphone,Electronics,2024-01-22,899.00,1,899.00,0,Credit Card,Online,REP001,Purchase,USD
+TXN005,CUST005,PROD005,Desk Lamp,Furniture,2024-01-23,45.75,2,22.88,15,PayPal,Online,REP004,Purchase,USD
+TXN006,CUST006,PROD006,Notebook Set,Stationery,2024-01-19,24.99,3,8.33,0,Cash,Store,REP005,Purchase,USD
+TXN007,CUST007,PROD007,Tablet,Electronics,2024-01-21,549.99,1,549.99,12,Credit Card,Online,REP001,Purchase,USD
+TXN008,CUST008,PROD008,Ergonomic Mouse,Electronics,2024-01-24,79.99,1,79.99,0,Debit Card,Online,REP006,Purchase,USD
+TXN009,CUST009,PROD009,Water Bottle,Accessories,2024-01-25,19.99,2,9.99,20,Cash,Store,REP007,Purchase,USD
+TXN010,CUST010,PROD010,Monitor,Electronics,2024-01-26,449.99,1,449.99,8,Credit Card,Online,REP001,Purchase,USD
+TXN011,CUST001,PROD002,Office Chair,Furniture,2024-01-27,299.50,1,299.50,0,Credit Card,Online,REP002,Return,USD
+TXN012,CUST003,PROD011,Printer,Electronics,2024-01-28,199.99,1,199.99,5,Debit Card,Store,REP008,Purchase,USD
