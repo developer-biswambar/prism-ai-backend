@@ -1,13 +1,13 @@
 [tool.poetry]
-name = "ftt-ml-backend"
+name = "prism-ai-backend"
 version = "1.0.0"
-description = "Financial Data Transformation Platform - Backend API"
-authors = ["FTT-ML Team <team@ftt-ml.com>"]
+description = "Prism AI Backend - Financial Data Processing API"
+authors = ["Prism AI Team <team@prism-ai.com>"]
 readme = "README.md"
 packages = [{include = "app"}]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 fastapi = "^0.104.1"
 uvicorn = {extras = ["standard"], version = "^0.24.0"}
 pydantic = "^2.5.0"
@@ -55,7 +55,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 100
-target-version = ['py311']
+target-version = ['py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -78,7 +78,7 @@ line_length = 100
 known_first_party = ["app"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
