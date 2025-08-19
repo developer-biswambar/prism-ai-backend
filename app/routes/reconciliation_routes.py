@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 from fastapi import APIRouter, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 from app.models.recon_models import ReconciliationResponse, ReconciliationSummary, OptimizedRulesConfig
 from app.services.reconciliation_service import OptimizedFileProcessor, optimized_reconciliation_storage
@@ -21,6 +21,27 @@ class ClosestMatchConfig(BaseModel):
     perfect_match_threshold: Optional[float] = 99.5  # Early termination threshold
     max_comparisons: Optional[int] = None  # Limit number of comparisons for performance
     use_sampling: Optional[bool] = None  # Force enable/disable sampling for large datasets
+    
+    @validator('use_sampling', pre=True)
+    def validate_use_sampling(cls, v):
+        """Handle 'NA' strings and invalid values, default to False"""
+        if v is None:
+            return None
+        if v == "NA" or v == "na" or v == "N/A" or v == "n/a" or v == "":
+            return False
+        if isinstance(v, str):
+            if v.lower() in ('true', '1', 'yes', 'on'):
+                return True
+            if v.lower() in ('false', '0', 'no', 'off'):
+                return False
+            if v.lower() in ('none', 'null'):
+                return None
+            # Any other invalid string defaults to False
+            return False
+        if isinstance(v, bool):
+            return v
+        # Any other invalid type defaults to False
+        return False
 
 # Setup logging
 logger = logging.getLogger(__name__)
