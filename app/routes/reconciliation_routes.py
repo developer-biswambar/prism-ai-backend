@@ -236,6 +236,7 @@ async def _process_reconciliation_core(
     df_b = processor.read_file(fileB, getattr(file_rule_b, 'SheetName', None))
 
     print(f"Read files: FileA {len(df_a)} rows, FileB {len(df_b)} rows")
+    print("ℹ️  Files already cleaned during upload process")
 
     # Validate rules against columns
     errors_a = processor.validate_rules_against_columns(df_a, file_rule_a)

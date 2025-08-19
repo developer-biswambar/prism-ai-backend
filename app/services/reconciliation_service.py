@@ -859,15 +859,16 @@ class OptimizedFileProcessor:
         logger.info("🔍 Calculating unmatched records...")
 
         # Unmatched records are calculated based on matched_indices sets
+        # Use safer boolean indexing to avoid NA ambiguity
+        unmatched_mask_a = df_a_work['_orig_index_a'].isin(matched_indices_a)
         unmatched_a = self._select_result_columns(
-            df_a_work[~df_a_work['_orig_index_a'].isin(matched_indices_a)].drop(['_orig_index_a', '_match_key'],
-                                                                                axis=1),
+            df_a_work[~unmatched_mask_a.fillna(False)].drop(['_orig_index_a', '_match_key'], axis=1),
             selected_columns_a, recon_rules, 'A'
         )
 
+        unmatched_mask_b = df_b_work['_orig_index_b'].isin(matched_indices_b)
         unmatched_b = self._select_result_columns(
-            df_b_work[~df_b_work['_orig_index_b'].isin(matched_indices_b)].drop(['_orig_index_b', '_match_key'],
-                                                                                axis=1),
+            df_b_work[~unmatched_mask_b.fillna(False)].drop(['_orig_index_b', '_match_key'], axis=1),
             selected_columns_b, recon_rules, 'B'
         )
 
