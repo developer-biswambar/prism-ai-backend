@@ -130,14 +130,14 @@ class OptimizedFileProcessor:
             # Step 1: Detect columns with leading zeros first
             dtype_mapping = detect_leading_zero_columns(content, file.filename, sheet_name)
 
-            if file.filename.endswith('.csv'):
+            if file.filename.lower().endswith('.csv'):
                 df = pd.read_csv(
                     io.BytesIO(content),
                     low_memory=False,
                     engine='c',  # Use C engine for better performance
                     dtype=dtype_mapping if dtype_mapping else None  # Preserve leading zero columns as strings
                 )
-            elif file.filename.endswith(('.xlsx', '.xls')):
+            elif file.filename.lower().endswith(('.xlsx', '.xls')):
                 if sheet_name:
                     df = pd.read_excel(
                         io.BytesIO(content),
@@ -1389,7 +1389,20 @@ class OptimizedFileProcessor:
 
             for start_idx, batch_result in processed_batches:
                 end_idx = start_idx + len(batch_result)
-                result_df.iloc[start_idx:end_idx] = batch_result
+                try:
+                    # Safe assignment that handles NA values properly
+                    for col in batch_result.columns:
+                        if col in result_df.columns:
+                            result_df.loc[result_df.index[start_idx:end_idx], col] = batch_result[col].values
+                except Exception as e:
+                    logger.warning(f"Error reassembling batch {start_idx}: {str(e)}")
+                    # Fallback: update specific columns that are known to be safe
+                    for col in ['closest_match_record', 'closest_match_score', 'closest_match_details']:
+                        if col in batch_result.columns and col in result_df.columns:
+                            try:
+                                result_df.loc[result_df.index[start_idx:end_idx], col] = batch_result[col].values
+                            except:
+                                pass  # Skip problematic columns
 
             total_time = time.time() - start_time
             batch_total_time = time.time() - batch_start_time
