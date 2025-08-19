@@ -1,0 +1,83 @@
+# Git and version control
+.git
+.gitignore
+*.md
+README.md
+
+# Python cache and build artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.python-version
+*.so
+.coverage
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Development files
+test/
+tests/
+*.test.py
+test_*.py
+*_test.py
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+temp/
+tmp/
+.tmp/
+
+# Node modules (if any)
+node_modules/
+
+# Poetry files (use requirements.txt in Docker)
+poetry.lock
+pyproject.toml
+
+# CI/CD files
+.github/
+.gitlab-ci.yml
+
+# Development tools
+.pre-commit-config.yaml
+bandit.yaml
+mypy.ini
+setup.cfg
+tox.ini
+
+# Sample data (reduce image size)
+sample_data/
+test_docs/

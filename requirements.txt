@@ -1,46 +1,61 @@
-# backend/requirements.txt - Updated with missing dependencies
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
-python-multipart==0.0.6
+# Prism AI Backend - Python 3.12 Compatible Requirements
+# Updated package versions with stable Python 3.12 support
+
+# Core Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+pydantic==2.6.4
+pydantic-settings==2.2.1
+
+# File Handling
+python-multipart==0.0.9
 aiofiles==23.2.1
-openai==1.35.12
-pandas==2.1.3
 openpyxl==3.1.2
 xlrd==2.0.1
-httpx==0.25.2
+xlsxwriter==3.2.0
+
+# Data Processing - Updated for Python 3.12 compatibility
+pandas==2.2.1
+numpy==1.26.4
+
+# HTTP Clients
+httpx==0.27.0
 requests==2.31.0
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
-black==23.11.0
-isort==5.12.0
-flake8==6.1.0
-structlog==23.2.0
 
-# String similarity and fuzzy matching
-rapidfuzz==3.5.2
+# AI Integration
+openai==1.51.2
 
-# Production WSGI server
+# String Matching
+rapidfuzz==3.6.2
+
+# AWS SDK
+boto3==1.34.51
+botocore==1.34.51
+
+# Vector Database - Updated version
+chromadb==0.4.24
+
+# Text Processing - Updated version
+sentence-transformers==2.6.1
+
+# Server Options
 waitress==2.1.2
 
-# File handling
-boto3==1.34.0
-botocore==1.34.0
-xlsxwriter==3.1.9
-python-dotenv==1.0.0
+# Utilities
+python-dotenv==1.0.1
+structlog==24.1.0
 
-# Vector DB dependencies for reconciliation
-chromadb==0.4.18
-sentence-transformers==2.2.2
-numpy==1.24.3
-
-# Development dependencies
-mypy==1.7.0
-pre-commit==3.5.0
-bandit==1.7.5
-safety==2.3.0
+# Development Dependencies
+pytest==7.4.4
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
 pytest-xdist==3.5.0
 pytest-mock==3.12.0
-faker==20.1.0
+black==24.2.0
+isort==5.13.2
+flake8==7.0.0
+mypy==1.8.0
+bandit==1.7.7
+safety==3.0.1
+faker==24.0.0
+pre-commit==3.6.2

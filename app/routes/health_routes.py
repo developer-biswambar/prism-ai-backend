@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 # API Endpoints
-@router.get("/health")
+@router.get("/actuator/health")
 async def health_check():
     # Get LLM service status
     llm_service = get_llm_service()

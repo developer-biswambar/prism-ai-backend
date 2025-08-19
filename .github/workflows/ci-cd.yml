@@ -1,0 +1,192 @@
+# Prism AI Backend - CI/CD Pipeline
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.12]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+
+    - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: poetry install --no-interaction --no-root
+
+    - name: Install project
+      run: poetry install --no-interaction
+
+    - name: Run linting
+      run: |
+        poetry run ruff check .
+        poetry run black --check .
+
+    - name: Run type checking
+      run: poetry run mypy app/
+
+    - name: Run security check
+      run: poetry run bandit -r app/
+
+    - name: Run tests
+      run: |
+        poetry run python test/run_tests.py --coverage --ci
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: true
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  build:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+
+    - name: Build Waitress variant
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.waitress
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:waitress
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+
+    steps:
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment"
+        # Add your staging deployment commands here
+        # Example: kubectl, helm, docker-compose, etc.
+
+  deploy-production:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment"
+        # Add your production deployment commands here
+        # Example: kubectl, helm, docker-compose, etc.
+
+  performance-test:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run performance tests
+      run: |
+        # Install k6 or similar load testing tool
+        sudo apt-get update
+        sudo apt-get install -y k6
+        
+        # Run performance tests against staging
+        # k6 run performance-tests/load-test.js
+
+    - name: Performance report
+      run: |
+        echo "Performance test completed"
+        # Upload results to performance monitoring system
