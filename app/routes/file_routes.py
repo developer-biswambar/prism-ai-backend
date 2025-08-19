@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import UploadFile, File, HTTPException, APIRouter, BackgroundTasks, Form, Request
 from pydantic import BaseModel
 
-from app.routes.delta_routes import DeltaProcessor, get_file_by_id
+from app.routes.delta_routes import get_file_by_id
 from app.utils.uuid_generator import generate_uuid
 
 # Load environment variables
@@ -56,11 +56,11 @@ def detect_leading_zero_columns(content: bytes, filename: str, sheet_name: Optio
     """
     try:
         logger.info("🔍 Detecting columns with leading zeros...")
-        
+
         # Read a small sample as all strings to detect leading zeros
         if filename.lower().endswith('.csv'):
             sample_df = pd.read_csv(
-                io.BytesIO(content), 
+                io.BytesIO(content),
                 dtype=str,  # Read everything as strings
                 nrows=100,  # Sample first 100 rows
                 encoding='utf-8'
@@ -73,41 +73,41 @@ def detect_leading_zero_columns(content: bytes, filename: str, sheet_name: Optio
                 nrows=100,  # Sample first 100 rows
                 engine='openpyxl'
             )
-        
+
         dtype_mapping = {}
         leading_zero_columns = []
-        
+
         for col in sample_df.columns:
             has_leading_zeros = False
-            
+
             # Check if any non-null values have leading zeros
             non_null_values = sample_df[col].dropna()
-            
+
             for value in non_null_values.head(20):  # Check first 20 values
                 if isinstance(value, str) and value.strip():
                     # Check if it's a numeric string with leading zeros
                     stripped_val = value.strip()
-                    
+
                     # Skip if it contains non-digit characters (except decimal point)
                     if not stripped_val.replace('.', '').replace('-', '').isdigit():
                         continue
-                    
+
                     # Check for leading zeros: starts with 0 and has more than 1 digit
-                    if (stripped_val.startswith('0') and 
-                        len(stripped_val) > 1 and 
-                        stripped_val != '0' and
-                        '.' not in stripped_val):  # Don't treat '0.123' as leading zero
+                    if (stripped_val.startswith('0') and
+                            len(stripped_val) > 1 and
+                            stripped_val != '0' and
+                            '.' not in stripped_val):  # Don't treat '0.123' as leading zero
                         has_leading_zeros = True
                         break
-            
+
             if has_leading_zeros:
                 dtype_mapping[col] = str
                 leading_zero_columns.append(col)
                 logger.info(f"   📌 Column '{col}' contains leading zeros - will preserve as strings")
-        
+
         logger.info(f"✅ Found {len(leading_zero_columns)} columns with leading zeros: {leading_zero_columns}")
         return dtype_mapping
-        
+
     except Exception as e:
         logger.warning(f"⚠️ Could not detect leading zero columns: {e}")
         return {}
@@ -129,9 +129,9 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
         original_columns = list(df.columns)
         cleaned_columns = []
         column_mapping = {}
-        
+
         logger.info(f"🧹 Cleaning column names for {len(original_columns)} columns...")
-        
+
         for i, col in enumerate(original_columns):
             if col is None:
                 # Handle None column names
@@ -140,16 +140,16 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
             else:
                 # Convert to string and strip spaces
                 cleaned_col = str(col).strip()
-                
+
                 # Handle empty column names after stripping
                 if cleaned_col == "":
                     cleaned_col = f"Unnamed_{i}"
                     logger.warning(f"  - Found empty column at index {i}, renamed to '{cleaned_col}'")
-                
+
                 # Log if column was changed
                 if str(col) != cleaned_col:
                     logger.info(f"  - Cleaned column: '{col}' → '{cleaned_col}'")
-            
+
             # Handle potential duplicates
             original_cleaned = cleaned_col
             counter = 1
@@ -158,16 +158,16 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
                 counter += 1
                 if counter > 1:  # Only log if we actually found duplicates
                     logger.warning(f"  - Duplicate column name detected, renamed to '{cleaned_col}'")
-            
+
             cleaned_columns.append(cleaned_col)
             column_mapping[original_columns[i]] = cleaned_col
-        
+
         # Apply column name changes
         df.columns = cleaned_columns
-        
+
         # Count how many columns were actually changed
         changes_made = sum(1 for orig, clean in zip(original_columns, cleaned_columns) if str(orig) != clean)
-        
+
         if changes_made > 0:
             logger.info(f"✅ Successfully cleaned {changes_made}/{len(original_columns)} column names")
             # Log specific changes for debugging
@@ -176,9 +176,9 @@ def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
                     logger.info(f"   '{orig}' → '{clean}'")
         else:
             logger.info("ℹ️  All column names were already clean")
-        
+
         return df
-        
+
     except Exception as e:
         logger.error(f"Error cleaning column names: {str(e)}")
         # Return original DataFrame if cleaning fails
@@ -200,10 +200,10 @@ def clean_data_values(df: pd.DataFrame) -> pd.DataFrame:
     """
     try:
         logger.info(f"🧼 Cleaning data values for {len(df.columns)} columns...")
-        
+
         cleaned_columns_count = 0
         total_values_cleaned = 0
-        
+
         # Process each column
         for col in df.columns:
             # Only process object/string columns
@@ -213,15 +213,15 @@ def clean_data_values(df: pd.DataFrame) -> pd.DataFrame:
                 if len(non_null_values) == 0:
                     logger.debug(f"  - Skipping empty column '{col}'")
                     continue
-                
+
                 # Check if this column contains string data (sample first few values)
                 sample_values = non_null_values.head(10)
                 string_count = sum(1 for val in sample_values if isinstance(val, str))
-                
+
                 # Only clean if at least 50% of sampled values are strings
                 if string_count >= len(sample_values) * 0.5:
                     original_values = df[col].copy()
-                    
+
                     # Apply string cleaning only to string values, preserve others
                     def clean_string_value(value):
                         if pd.isna(value):
@@ -231,20 +231,20 @@ def clean_data_values(df: pd.DataFrame) -> pd.DataFrame:
                             return cleaned
                         else:
                             return value  # Keep non-strings as-is (numbers, dates, etc.)
-                    
+
                     df[col] = df[col].apply(clean_string_value)
-                    
+
                     # Count how many values were actually changed
                     changes_in_column = 0
                     for orig, clean in zip(original_values, df[col]):
                         if pd.notna(orig) and pd.notna(clean) and str(orig) != str(clean):
                             changes_in_column += 1
-                    
+
                     if changes_in_column > 0:
                         cleaned_columns_count += 1
                         total_values_cleaned += changes_in_column
                         logger.info(f"  - Cleaned column '{col}': {changes_in_column} values trimmed")
-                        
+
                         # Show example of cleaning (first changed value)
                         for orig, clean in zip(original_values, df[col]):
                             if pd.notna(orig) and pd.notna(clean) and str(orig) != str(clean):
@@ -253,17 +253,19 @@ def clean_data_values(df: pd.DataFrame) -> pd.DataFrame:
                     else:
                         logger.debug(f"  - Column '{col}' already clean (no changes needed)")
                 else:
-                    logger.debug(f"  - Skipping column '{col}': contains mostly non-string data ({string_count}/{len(sample_values)} strings)")
+                    logger.debug(
+                        f"  - Skipping column '{col}': contains mostly non-string data ({string_count}/{len(sample_values)} strings)")
             else:
                 logger.debug(f"  - Skipping numeric/datetime column '{col}' ({df[col].dtype})")
-        
+
         if total_values_cleaned > 0:
-            logger.info(f"✅ Successfully cleaned {total_values_cleaned} data values across {cleaned_columns_count} columns")
+            logger.info(
+                f"✅ Successfully cleaned {total_values_cleaned} data values across {cleaned_columns_count} columns")
         else:
             logger.info("ℹ️  All data values were already clean")
-        
+
         return df
-        
+
     except Exception as e:
         logger.error(f"Error cleaning data values: {str(e)}")
         # Return original DataFrame if cleaning fails
@@ -281,8 +283,9 @@ def remove_empty_rows_and_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]
         Tuple of (cleaned_df, cleanup_stats)
     """
     try:
-        logger.info(f"🗑️  Checking for empty rows and columns in DataFrame ({len(df)} rows, {len(df.columns)} columns)...")
-        
+        logger.info(
+            f"🗑️  Checking for empty rows and columns in DataFrame ({len(df)} rows, {len(df.columns)} columns)...")
+
         original_shape = df.shape
         cleanup_stats = {
             'original_rows': int(original_shape[0]),
@@ -293,13 +296,13 @@ def remove_empty_rows_and_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]
             'final_rows': 0,
             'final_columns': 0
         }
-        
+
         # Remove completely empty columns (all NaN or empty strings)
         empty_columns = []
         for col in df.columns:
             # Check if column is completely empty (all NaN, None, or empty strings after stripping)
             non_empty_values = df[col].dropna()  # Remove NaN/None
-            
+
             if len(non_empty_values) == 0:
                 # Column has only NaN/None values
                 empty_columns.append(col)
@@ -309,13 +312,13 @@ def remove_empty_rows_and_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]
                 non_empty_strings = [val for val in string_values if val != '']
                 if len(non_empty_strings) == 0:
                     empty_columns.append(col)
-        
+
         if empty_columns:
             logger.info(f"  - Found {len(empty_columns)} completely empty columns: {empty_columns}")
             df = df.drop(columns=empty_columns)
             cleanup_stats['removed_columns'] = int(len(empty_columns))
             cleanup_stats['empty_column_names'] = list(empty_columns)
-        
+
         # Remove completely empty rows (all NaN or empty strings)
         # Create a mask for non-empty rows
         def is_row_empty(row):
@@ -324,32 +327,34 @@ def remove_empty_rows_and_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]
                 if pd.notna(val) and str(val).strip() != '':
                     return False
             return True
-        
+
         empty_row_mask = df.apply(is_row_empty, axis=1)
         empty_row_count = empty_row_mask.sum()
-        
+
         if empty_row_count > 0:
             logger.info(f"  - Found {empty_row_count} completely empty rows")
             df = df[~empty_row_mask]
             cleanup_stats['removed_rows'] = int(empty_row_count)
-        
+
         # Reset index after removing rows
         df = df.reset_index(drop=True)
-        
+
         # Update final stats
         cleanup_stats['final_rows'] = int(len(df))
         cleanup_stats['final_columns'] = int(len(df.columns))
-        
+
         # Log results
         if cleanup_stats['removed_rows'] > 0 or cleanup_stats['removed_columns'] > 0:
             logger.info(f"✅ Cleanup completed:")
-            logger.info(f"   - Rows: {original_shape[0]} → {len(df)} (removed {cleanup_stats['removed_rows']} empty rows)")
-            logger.info(f"   - Columns: {original_shape[1]} → {len(df.columns)} (removed {cleanup_stats['removed_columns']} empty columns)")
+            logger.info(
+                f"   - Rows: {original_shape[0]} → {len(df)} (removed {cleanup_stats['removed_rows']} empty rows)")
+            logger.info(
+                f"   - Columns: {original_shape[1]} → {len(df.columns)} (removed {cleanup_stats['removed_columns']} empty columns)")
         else:
             logger.info("ℹ️  No empty rows or columns found")
-        
+
         return df, cleanup_stats
-        
+
     except Exception as e:
         logger.error(f"Error removing empty rows/columns: {str(e)}")
         # Return original DataFrame and empty stats if cleaning fails
@@ -372,7 +377,7 @@ def preserve_integer_types(df: pd.DataFrame) -> pd.DataFrame:
     try:
         logger.info(f"🔢 Preserving integer types in {len(df.columns)} columns...")
         converted_columns = []
-        
+
         for col in df.columns:
             if df[col].dtype == 'float64':
                 # Check if all non-null values are whole numbers
@@ -381,10 +386,10 @@ def preserve_integer_types(df: pd.DataFrame) -> pd.DataFrame:
                     try:
                         # Check if all values are integers (no decimal part)
                         is_integer_column = all(
-                            float(val).is_integer() for val in non_null_values 
+                            float(val).is_integer() for val in non_null_values
                             if pd.notna(val) and isinstance(val, (int, float))
                         )
-                        
+
                         if is_integer_column:
                             # Convert to Int64 (pandas nullable integer type) to handle NaN values
                             df[col] = df[col].astype('Int64')
@@ -393,12 +398,13 @@ def preserve_integer_types(df: pd.DataFrame) -> pd.DataFrame:
                     except (ValueError, TypeError):
                         # Skip columns that can't be converted
                         continue
-        
+
         if converted_columns:
-            logger.info(f"✅ Preserved integer types in {len(converted_columns)} columns: {converted_columns[:5]}{'...' if len(converted_columns) > 5 else ''}")
+            logger.info(
+                f"✅ Preserved integer types in {len(converted_columns)} columns: {converted_columns[:5]}{'...' if len(converted_columns) > 5 else ''}")
         else:
             logger.info("ℹ️  No float columns needed integer type preservation")
-                        
+
         return df
     except Exception as e:
         logger.warning(f"Warning: Could not preserve integer types: {str(e)}")
@@ -418,15 +424,16 @@ def normalize_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     try:
         from app.utils.date_utils import normalize_date_value
-        
+
         # Aggressive date detection - check ALL columns for date content
         all_columns = list(df.columns)
         datetime_columns_detected = df.select_dtypes(include=['datetime64[ns]']).columns
         converted_date_columns = []
-        
+
         logger.info(f"🔍 Checking all {len(all_columns)} columns for date content...")
         if len(datetime_columns_detected) > 0:
-            logger.info(f"  - Pandas auto-detected {len(datetime_columns_detected)} datetime columns: {list(datetime_columns_detected)}")
+            logger.info(
+                f"  - Pandas auto-detected {len(datetime_columns_detected)} datetime columns: {list(datetime_columns_detected)}")
 
         for col in all_columns:
             # Sample some non-null values to check if they look like dates
@@ -452,7 +459,8 @@ def normalize_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
             if date_like_count >= sample_size * detection_threshold:
                 try:
                     original_dtype = str(df[col].dtype)
-                    logger.info(f"📅 Converting column '{col}' to normalized dates ({date_like_count}/{sample_size} samples are date-like, type: {original_dtype})")
+                    logger.info(
+                        f"📅 Converting column '{col}' to normalized dates ({date_like_count}/{sample_size} samples are date-like, type: {original_dtype})")
 
                     # Apply the robust date parser to the entire column
                     def convert_to_date_string(value):
@@ -462,7 +470,7 @@ def normalize_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
                         if parsed_date_str is not None:
                             return parsed_date_str  # Already in YYYY-MM-DD format
                         return str(value)  # Convert to string if not parseable as date
-                    
+
                     df[col] = df[col].apply(convert_to_date_string)
                     converted_date_columns.append(col)
                     logger.info(f"  ✅ Successfully converted '{col}' from {original_dtype} to YYYY-MM-DD strings")
@@ -470,17 +478,20 @@ def normalize_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
                 except Exception as e:
                     logger.warning(f"  ❌ Failed to convert column '{col}' to dates: {str(e)}")
             else:
-                logger.debug(f"  - Skipping '{col}': only {date_like_count}/{sample_size} samples are date-like ({date_like_count/sample_size*100:.1f}%)")
+                logger.debug(
+                    f"  - Skipping '{col}': only {date_like_count}/{sample_size} samples are date-like ({date_like_count / sample_size * 100:.1f}%)")
 
         if converted_date_columns:
-            logger.info(f"🎉 Successfully normalized {len(converted_date_columns)} columns to YYYY-MM-DD format: {converted_date_columns}")
+            logger.info(
+                f"🎉 Successfully normalized {len(converted_date_columns)} columns to YYYY-MM-DD format: {converted_date_columns}")
         else:
             logger.info("ℹ️  No date columns detected for normalization")
-        
+
         # Final validation - check if any datetime columns still exist
         remaining_datetime_cols = df.select_dtypes(include=['datetime64[ns]']).columns
         if len(remaining_datetime_cols) > 0:
-            logger.warning(f"⚠️  WARNING: {len(remaining_datetime_cols)} datetime columns still exist after normalization: {list(remaining_datetime_cols)}")
+            logger.warning(
+                f"⚠️  WARNING: {len(remaining_datetime_cols)} datetime columns still exist after normalization: {list(remaining_datetime_cols)}")
             # Force convert any remaining datetime columns
             for col in remaining_datetime_cols:
                 df[col] = df[col].apply(lambda x: normalize_date_value(x) if pd.notna(x) else None)
@@ -507,11 +518,11 @@ def extract_excel_sheet_info(content: bytes, filename: str) -> List[SheetInfo]:
             try:
                 # Read only the first few rows to get basic metadata (fast operation)
                 df_sample = pd.read_excel(
-                    excel_file, 
-                    sheet_name=sheet_name, 
+                    excel_file,
+                    sheet_name=sheet_name,
                     nrows=0  # Read only headers, no data rows
                 )
-                
+
                 # Get total row count without reading all data (if possible)
                 try:
                     # Try to get sheet dimensions from openpyxl for better performance
@@ -524,14 +535,14 @@ def extract_excel_sheet_info(content: bytes, filename: str) -> List[SheetInfo]:
                     # Fallback: read all data to get row count (slower)
                     df_full = pd.read_excel(excel_file, sheet_name=sheet_name)
                     row_count = len(df_full)
-                
+
                 sheet_info.append(SheetInfo(
                     sheet_name=sheet_name,
                     row_count=max(0, row_count),  # Ensure non-negative
                     column_count=len(df_sample.columns),
                     columns=df_sample.columns.tolist()
                 ))
-                
+
             except Exception as e:
                 logger.warning(f"Could not read sheet '{sheet_name}' in {filename}: {str(e)}")
                 # Add sheet with minimal info if we can't read it
@@ -657,7 +668,7 @@ async def upload_file(
         try:
             # Step 1: Detect columns with leading zeros first
             dtype_mapping = detect_leading_zero_columns(content, file.filename, sheet_name)
-            
+
             if file.filename.lower().endswith('.csv'):
                 # Use optimized CSV reading with leading zero preservation
                 df = pd.read_csv(
@@ -687,38 +698,39 @@ async def upload_file(
 
             # Check if we should use fast parallel cleaning for large files
             use_parallel_cleaning = len(df) > 50000 or len(df.columns) > 50
-            
+
             if use_parallel_cleaning:
-                logger.info(f"🚀 Using parallel cleaning for large dataset ({len(df):,} rows × {len(df.columns)} columns)")
-                
+                logger.info(
+                    f"🚀 Using parallel cleaning for large dataset ({len(df):,} rows × {len(df.columns)} columns)")
+
                 # Import the parallel cleaning module
                 from app.utils.parallel_cleaning import clean_dataframe_fast
-                
+
                 # Use high-performance parallel cleaning
                 df, cleanup_stats = clean_dataframe_fast(df, max_workers=None)  # Auto-detect optimal thread count
-                
+
             else:
-                logger.info(f"📝 Using standard cleaning for smaller dataset ({len(df):,} rows × {len(df.columns)} columns)")
-                
+                logger.info(
+                    f"📝 Using standard cleaning for smaller dataset ({len(df):,} rows × {len(df.columns)} columns)")
+
                 # Step 1: Remove completely empty rows and columns first
                 df, cleanup_stats = remove_empty_rows_and_columns(df)
-                
+
                 # Step 2: Clean column names (strip spaces, handle duplicates)
                 df = clean_column_names(df)
-                
+
                 # Step 3: Clean data values (strip spaces from string data)
                 df = clean_data_values(df)
-            
+
             # Step 4: Preserve integer types (prevent 15 -> 15.0 conversion)
             df = preserve_integer_types(df)
-            
+
             # Step 5: Always normalize datetime columns (applies to both paths)
             df = normalize_datetime_columns(df)
 
         except Exception as e:
             logger.error(f"Error reading file {file.filename}: {str(e)}")
             raise HTTPException(400, f"Error reading file: {str(e)}")
-
 
         # Log processing results
         total_rows = len(df)
@@ -767,22 +779,22 @@ async def upload_file(
             response_message += f" from sheet '{sheet_name}'"
         if custom_name:
             response_message += f" with custom name '{custom_name}'"
-        
+
         # Enhanced user feedback for data cleaning
         cleanup_warnings = []
         cleanup_details = []
-        
+
         # Check for excessive empty content that might indicate file quality issues
         # Convert numpy types to native Python types to avoid serialization issues
         original_rows = int(cleanup_stats['original_rows'])
         original_columns = int(cleanup_stats['original_columns'])
         removed_rows = int(cleanup_stats['removed_rows'])
         removed_columns = int(cleanup_stats['removed_columns'])
-        
+
         # Calculate percentages of empty content
         empty_row_percentage = (removed_rows / original_rows * 100) if original_rows > 0 else 0
         empty_col_percentage = (removed_columns / original_columns * 100) if original_columns > 0 else 0
-        
+
         # Build cleanup details
         if removed_rows > 0:
             cleanup_details.append(f"{removed_rows} empty rows removed")
@@ -791,24 +803,28 @@ async def upload_file(
             if cleanup_stats.get('empty_column_names'):
                 empty_col_names = cleanup_stats['empty_column_names'][:5]  # Show first 5 empty column names
                 if len(cleanup_stats['empty_column_names']) > 5:
-                    cleanup_details.append(f"Empty columns included: {', '.join(empty_col_names[:3])}, and {len(cleanup_stats['empty_column_names']) - 3} more")
+                    cleanup_details.append(
+                        f"Empty columns included: {', '.join(empty_col_names[:3])}, and {len(cleanup_stats['empty_column_names']) - 3} more")
                 else:
                     cleanup_details.append(f"Empty columns: {', '.join(empty_col_names)}")
-        
+
         # Add cleanup information to response message
         if cleanup_details:
             response_message += f". ⚡ Data cleanup: {', '.join(cleanup_details)}"
-        
+
         # Generate warnings for excessive empty content
         if empty_row_percentage >= 30:
-            cleanup_warnings.append(f"⚠️  High number of empty rows detected ({empty_row_percentage:.1f}% of original file)")
+            cleanup_warnings.append(
+                f"⚠️  High number of empty rows detected ({empty_row_percentage:.1f}% of original file)")
         if empty_col_percentage >= 20:
-            cleanup_warnings.append(f"⚠️  High number of empty columns detected ({empty_col_percentage:.1f}% of original file)")
-        
+            cleanup_warnings.append(
+                f"⚠️  High number of empty columns detected ({empty_col_percentage:.1f}% of original file)")
+
         # Add warnings for poor file quality
         if removed_rows > 100 or removed_columns > 10:
-            cleanup_warnings.append("💡 Tip: Consider cleaning your Excel/CSV files before upload to improve processing speed")
-        
+            cleanup_warnings.append(
+                "💡 Tip: Consider cleaning your Excel/CSV files before upload to improve processing speed")
+
         # Log warnings for monitoring
         if cleanup_warnings:
             for warning in cleanup_warnings:
@@ -829,11 +845,11 @@ async def upload_file(
             "warnings": cleanup_warnings,
             "details": cleanup_details
         }
-        
+
         # Add parallel processing performance stats if available
         if hasattr(cleanup_stats, 'performance_stats') and cleanup_stats.get('performance_stats'):
             perf_stats = cleanup_stats['performance_stats']
-            
+
             # Add processing time breakdown
             if 'timing' in perf_stats:
                 cleanup_response["performance"] = {
@@ -841,16 +857,16 @@ async def upload_file(
                     "timing_breakdown": perf_stats['timing'],
                     "processing_method": "parallel_multi_threaded" if use_parallel_cleaning else "standard_sequential"
                 }
-                
+
                 # Calculate performance metrics
                 total_cells = original_rows * original_columns
                 processing_time = cleanup_stats.get('processing_time_seconds', 0)
-                
+
                 if processing_time > 0:
                     cells_per_second = int(total_cells / processing_time)
                     cleanup_response["performance"]["cells_per_second"] = cells_per_second
                     cleanup_response["performance"]["megacells_per_second"] = round(cells_per_second / 1000000, 2)
-                    
+
             # Add additional parallel-specific stats
             if use_parallel_cleaning:
                 cleanup_response["parallel_stats"] = {
@@ -939,16 +955,16 @@ async def select_sheet(file_id: str, request: UpdateSheetRequest):
         # Apply the same cleaning pipeline as file upload
         # Step 1: Remove completely empty rows and columns
         df, cleanup_stats = remove_empty_rows_and_columns(df)
-        
+
         # Step 2: Clean column names for the new sheet
         df = clean_column_names(df)
-        
+
         # Step 3: Clean data values
         df = clean_data_values(df)
-        
+
         # Step 4: Normalize datetime columns for the new sheet
         df = normalize_datetime_columns(df)
-        
+
         # Update stored data
         uploaded_files[file_id]["data"] = df
         uploaded_files[file_id]["info"]["selected_sheet"] = request.sheet_name
@@ -1159,17 +1175,17 @@ async def get_column_unique_values(
         # Apply cascading filters from query parameters
         filtered_df = df.copy()
         applied_filters = []
-        
+
         if request:
             # Parse filter parameters (format: filter_columnname=value1,value2)
             for param_name, param_value in request.query_params.items():
                 if param_name.startswith('filter_') and param_name != f'filter_{column_name}':
                     filter_column = param_name[7:]  # Remove 'filter_' prefix
-                    
+
                     if filter_column in filtered_df.columns:
                         # Parse comma-separated filter values
                         filter_values = [v.strip() for v in param_value.split(',') if v.strip()]
-                        
+
                         if filter_values:
                             # Apply filter: keep only rows where the filter column has one of the specified values
                             filtered_df = filtered_df[filtered_df[filter_column].astype(str).isin(filter_values)]
@@ -1178,9 +1194,10 @@ async def get_column_unique_values(
                                 'values': filter_values,
                                 'matched_rows': len(filtered_df)
                             })
-                            
-                            logger.info(f"Applied cascading filter on {filter_column}: {filter_values} -> {len(filtered_df)} rows remaining")
-        
+
+                            logger.info(
+                                f"Applied cascading filter on {filter_column}: {filter_values} -> {len(filtered_df)} rows remaining")
+
         # Get the column data from filtered DataFrame
         column_data = filtered_df[column_name].dropna()
 

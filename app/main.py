@@ -4,14 +4,13 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+# Load .env file
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.services.storage_service import uploaded_files, extractions, comparisons, reconciliations
-
-# Load .env file
-from dotenv import load_dotenv
 
 load_dotenv()
 print("✅ .env file loaded successfully")

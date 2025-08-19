@@ -64,7 +64,8 @@ async def get_file_data(
         page: int = Query(1, ge=1, description="Page number"),
         page_size: int = Query(1000, ge=1, le=5000, description="Items per page"),
         search: str = Query("", description="Search term to filter data across all columns"),
-        filter_column: str = Query("", description="Column name for column-specific filtering (deprecated - use filter_<column>=values)"),
+        filter_column: str = Query("",
+                                   description="Column name for column-specific filtering (deprecated - use filter_<column>=values)"),
         filter_values: str = Query("", description="Comma-separated values for column-specific filtering (deprecated)"),
         request: Request = None
 ):
@@ -92,24 +93,24 @@ async def get_file_data(
                             df = df[mask]
                             column_filters_applied = True
                             logger.info(f"Applied filter on column '{column_name}' with values: {values}")
-        
+
         # Fallback to old single filter format for backwards compatibility
         if not column_filters_applied and filter_column.strip() and filter_values.strip():
             # Column-specific filtering (from dropdown selection) - deprecated
             column_name = filter_column.strip()
             values = [v.strip() for v in filter_values.split(',') if v.strip()]
-            
+
             if column_name in df.columns and values:
                 # Create mask for rows where the specific column contains any of the filter values
                 mask = df[column_name].astype(str).str.lower().isin([v.lower() for v in values])
                 df = df[mask]
                 column_filters_applied = True
-            
+
         # Search across all columns if no column filters are applied
         if not column_filters_applied and search.strip():
             # Wildcard search across all columns (from search box)
             search_term = search.strip().lower()
-            
+
             # Create a mask for rows that contain the search term in any column
             mask = df.astype(str).apply(
                 lambda row: any(search_term in str(cell).lower() for cell in row), axis=1
@@ -259,7 +260,7 @@ async def patch_file_data(file_id: str, request: PatchFileDataRequest):
         # Get the current DataFrame
         df = uploaded_files[file_id]["data"].copy()
         file_info = uploaded_files[file_id]["info"]
-        
+
         changes_applied = {
             "cell_changes": 0,
             "added_rows": 0,
@@ -274,13 +275,13 @@ async def patch_file_data(file_id: str, request: PatchFileDataRequest):
                     df[operation.column_name] = ""
                     changes_applied["column_operations"] += 1
                     logger.info(f"Added column '{operation.column_name}' to file {file_id}")
-            
+
             elif operation.type == "delete" and operation.column_name:
                 if operation.column_name in df.columns:
                     df = df.drop(columns=[operation.column_name])
                     changes_applied["column_operations"] += 1
                     logger.info(f"Deleted column '{operation.column_name}' from file {file_id}")
-            
+
             elif operation.type == "rename" and operation.old_name and operation.new_name:
                 if operation.old_name in df.columns and operation.new_name not in df.columns:
                     df = df.rename(columns={operation.old_name: operation.new_name})

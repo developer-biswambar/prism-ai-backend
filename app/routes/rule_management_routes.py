@@ -154,7 +154,7 @@ def sanitize_transformation_rule_config(config: Dict[str, Any]) -> Dict[str, Any
             sanitized_source = {
                 'file_id': f'source_file_{i}',  # Generic placeholder
                 'alias': f'source_file_{i}',
-                'purpose': source_file.get('purpose', f'Source file {i+1}')
+                'purpose': source_file.get('purpose', f'Source file {i + 1}')
             }
             sanitized['source_files'].append(sanitized_source)
 
@@ -177,7 +177,8 @@ def sanitize_transformation_rule_config(config: Dict[str, Any]) -> Dict[str, Any
     return sanitized
 
 
-def apply_transformation_rule_to_files(rule_config: Dict[str, Any], file_columns: Dict[str, List[str]]) -> Dict[str, Any]:
+def apply_transformation_rule_to_files(rule_config: Dict[str, Any], file_columns: Dict[str, List[str]]) -> Dict[
+    str, Any]:
     """Apply a saved transformation rule to new files, adapting to their column structure"""
     applied_config = rule_config.copy()
 
@@ -678,7 +679,8 @@ async def rule_management_health():
         total_rules = len(rules_storage)
         total_transformation_rules = len(transformation_rules_storage)
         categories = list(set(rule.get('category', 'general') for rule in rules_storage.values()))
-        transformation_categories = list(set(rule.get('category', 'transformation') for rule in transformation_rules_storage.values()))
+        transformation_categories = list(
+            set(rule.get('category', 'transformation') for rule in transformation_rules_storage.values()))
 
         # Calculate some basic statistics
         total_usage = sum(rule.get('usage_count', 0) for rule in rules_storage.values())

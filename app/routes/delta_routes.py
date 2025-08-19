@@ -262,7 +262,7 @@ class DeltaProcessor:
         """Create a boolean mask for date matching using shared date utilities"""
         try:
             from app.utils.date_utils import normalize_date_value
-            
+
             # Parse the target date using shared utilities
             target_date_normalized = normalize_date_value(target_date_str)
             if target_date_normalized is None:
@@ -610,27 +610,28 @@ async def get_file_by_id(file_id: str):
 @router.post("/generate-config/")
 async def generate_delta_config(request: dict):
     """Generate delta configuration using AI based on user requirements"""
-    
+
     try:
         requirements = request.get('requirements', '')
         source_files = request.get('source_files', [])
-        
+
         if not requirements:
             raise HTTPException(status_code=400, detail="Requirements are required")
-        
+
         if not source_files or len(source_files) != 2:
             raise HTTPException(status_code=400, detail="Exactly 2 source files are required for delta generation")
-        
+
         # Import LLM service
         from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
-        
+
         llm_service = get_llm_service()
         if not llm_service.is_available():
-            raise HTTPException(status_code=500, detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
-        
+            raise HTTPException(status_code=500,
+                                detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
+
         # Get generation parameters from config
         generation_params = get_llm_generation_params()
-        
+
         # Prepare context about source files
         files_context = []
         for i, sf in enumerate(source_files):
@@ -638,9 +639,9 @@ async def generate_delta_config(request: dict):
             files_context.append(f"File {i + 1} ({role}): {sf['filename']}")
             files_context.append(f"  Columns: {', '.join(sf['columns'])}")
             files_context.append(f"  Rows: {sf['totalRows']}")
-        
+
         files_info = "\\n".join(files_context)
-        
+
         # Create prompt for AI delta configuration generation
         prompt = f"""
 You are an expert financial data delta generation configuration generator. Based on the user requirements and source file information, generate a JSON configuration for delta analysis between two data files.
@@ -725,23 +726,24 @@ Examples of good comparison rules:
 - Date comparison: {{"LeftFileColumn": "date", "RightFileColumn": "transaction_date", "MatchType": "date_equals", "ToleranceValue": null, "IsKey": false}}
 - Status comparison: {{"LeftFileColumn": "status", "RightFileColumn": "record_status", "MatchType": "equals", "ToleranceValue": null, "IsKey": false}}
 """
-        
+
         # Call LLM service
         messages = [
-            LLMMessage(role="system", content="You are a financial data delta generation expert. Return only valid JSON configuration."),
+            LLMMessage(role="system",
+                       content="You are a financial data delta generation expert. Return only valid JSON configuration."),
             LLMMessage(role="user", content=prompt)
         ]
-        
+
         response = llm_service.generate_text(
             messages=messages,
             **generation_params
         )
-        
+
         if not response.success:
             raise HTTPException(status_code=500, detail=f"LLM generation failed: {response.error}")
-        
+
         generated_config_text = response.content
-        
+
         # Parse the JSON response
         import json
         try:
@@ -754,13 +756,13 @@ Examples of good comparison rules:
                 generated_config = json.loads(json_match.group())
             else:
                 raise HTTPException(status_code=500, detail="Failed to parse AI-generated configuration")
-        
+
         # Validate the generated configuration has required fields
         required_fields = ['Files', 'KeyRules']
         missing_fields = [field for field in required_fields if field not in generated_config]
         if missing_fields:
             raise HTTPException(status_code=500, detail=f"AI generated config missing fields: {missing_fields}")
-        
+
         # Ensure we have exactly 2 files
         if len(generated_config.get('Files', [])) != 2:
             # Fix the configuration
@@ -771,28 +773,30 @@ Examples of good comparison rules:
                     "Filter": generated_config.get('Files', [{}])[0].get('Filter', [])
                 },
                 {
-                    "Name": "FileB", 
-                    "Extract": generated_config.get('Files', [{}, {}])[1].get('Extract', []) if len(generated_config.get('Files', [])) > 1 else [],
-                    "Filter": generated_config.get('Files', [{}, {}])[1].get('Filter', []) if len(generated_config.get('Files', [])) > 1 else []
+                    "Name": "FileB",
+                    "Extract": generated_config.get('Files', [{}, {}])[1].get('Extract', []) if len(
+                        generated_config.get('Files', [])) > 1 else [],
+                    "Filter": generated_config.get('Files', [{}, {}])[1].get('Filter', []) if len(
+                        generated_config.get('Files', [])) > 1 else []
                 }
             ]
-        
+
         # Ensure selected columns are present
         if 'selected_columns_file_a' not in generated_config:
             generated_config['selected_columns_file_a'] = source_files[0].get('columns', [])
         if 'selected_columns_file_b' not in generated_config:
             generated_config['selected_columns_file_b'] = source_files[1].get('columns', [])
-        
+
         # Ensure ComparisonRules is present (optional but should be in structure)
         if 'ComparisonRules' not in generated_config:
             generated_config['ComparisonRules'] = []
-        
+
         return {
             "success": True,
             "message": "Delta configuration generated successfully",
             "data": generated_config
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1013,15 +1017,15 @@ async def process_delta_generation(request: JSONDeltaRequest):
         save_results = {}
         save_operations = [
             ("all", save_request_all),
-            ("amended", save_request_amended), 
+            ("amended", save_request_amended),
             ("deleted", save_request_deleted),
             ("added", save_request_added),
             ("unchanged", save_request_unchanged)
         ]
-        
+
         successful_saves = []
         failed_saves = []
-        
+
         for save_name, save_request in save_operations:
             try:
                 save_result = await save_results_to_server(save_request)
@@ -1033,12 +1037,14 @@ async def process_delta_generation(request: JSONDeltaRequest):
                 print(f"❌ {error_msg}")
                 failed_saves.append(save_name)
                 processor.warnings.append(error_msg)
-        
+
         # Log summary of save operations
         if successful_saves:
-            print(f"✅ Successfully saved {len(successful_saves)}/{len(save_operations)} result types: {', '.join(successful_saves)}")
+            print(
+                f"✅ Successfully saved {len(successful_saves)}/{len(save_operations)} result types: {', '.join(successful_saves)}")
         if failed_saves:
-            print(f"❌ Failed to save {len(failed_saves)}/{len(save_operations)} result types: {', '.join(failed_saves)}")
+            print(
+                f"❌ Failed to save {len(failed_saves)}/{len(save_operations)} result types: {', '.join(failed_saves)}")
             processor.warnings.append(f"Some result saves failed: {', '.join(failed_saves)}")
 
         return DeltaResponse(
@@ -1285,7 +1291,7 @@ async def delete_delta_results(delta_id: str):
 @router.get("/health")
 async def delta_health_check():
     """Health check for delta generation service"""
-    
+
     # Check LLM service status
     try:
         from app.services.llm_service import get_llm_service
@@ -1302,7 +1308,7 @@ async def delta_health_check():
             "available": False,
             "error": str(e)
         }
-    
+
     storage_count = len(delta_storage)
 
     return {

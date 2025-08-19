@@ -1,7 +1,6 @@
 # backend/app/utils/date_utils.py - Shared date utilities
 import re
 from datetime import datetime
-from functools import lru_cache
 from typing import Optional
 
 import pandas as pd
@@ -12,10 +11,10 @@ class DateNormalizer:
     Shared date normalization utility class.
     Provides comprehensive date parsing and normalization functionality.
     """
-    
+
     def __init__(self):
         self._date_cache = {}  # Cache parsed dates for performance
-    
+
     def normalize_date_value(self, value) -> Optional[str]:
         """
         Normalize date value to universal YYYY-MM-DD string format.
@@ -55,7 +54,7 @@ class DateNormalizer:
                     else:
                         # For other formats, use dayfirst=False (default)
                         parsed_date = pd.to_datetime(value_str, dayfirst=False, errors='raise')
-                    
+
                     if isinstance(parsed_date, pd.Timestamp):
                         parsed_date = parsed_date.to_pydatetime()
                     parsed_date = parsed_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -68,7 +67,7 @@ class DateNormalizer:
                         else:
                             # Try dayfirst=True as fallback
                             parsed_date = pd.to_datetime(value_str, dayfirst=True, errors='raise')
-                        
+
                         if isinstance(parsed_date, pd.Timestamp):
                             parsed_date = parsed_date.to_pydatetime()
                         parsed_date = parsed_date.replace(hour=0, minute=0, second=0, microsecond=0)

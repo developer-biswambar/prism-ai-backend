@@ -8,10 +8,11 @@ Simplified LLM service architecture supporting two providers:
 import logging
 import os
 import re
-import requests
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+from typing import List, Optional
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -58,28 +59,28 @@ class LLMResponse:
 
 class LLMServiceInterface(ABC):
     """Abstract base class for LLM service providers"""
-    
+
     @abstractmethod
     def generate_text(
-        self, 
-        messages: List[LLMMessage], 
-        temperature: float = 0.3,
-        max_tokens: int = 2000,
-        **kwargs
+            self,
+            messages: List[LLMMessage],
+            temperature: float = 0.3,
+            max_tokens: int = 2000,
+            **kwargs
     ) -> LLMResponse:
         """Generate text response from the LLM provider"""
         pass
-    
+
     @abstractmethod
     def is_available(self) -> bool:
         """Check if the LLM provider is available and configured"""
         pass
-    
+
     @abstractmethod
     def get_provider_name(self) -> str:
         """Get the name of the LLM provider"""
         pass
-    
+
     @abstractmethod
     def get_model_name(self) -> str:
         """Get the current model name being used"""
@@ -88,12 +89,12 @@ class LLMServiceInterface(ABC):
 
 class OpenAILLMService(LLMServiceInterface):
     """OpenAI implementation of the LLM service"""
-    
+
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         self.model = model
         self._client = None
-        
+
         if self.api_key:
             try:
                 from openai import OpenAI
@@ -105,13 +106,13 @@ class OpenAILLMService(LLMServiceInterface):
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}")
                 self._client = None
-    
+
     def generate_text(
-        self, 
-        messages: List[LLMMessage], 
-        temperature: float = 0.3,
-        max_tokens: int = 2000,
-        **kwargs
+            self,
+            messages: List[LLMMessage],
+            temperature: float = 0.3,
+            max_tokens: int = 2000,
+            **kwargs
     ) -> LLMResponse:
         """Generate text using OpenAI API"""
         if not self.is_available():
@@ -122,14 +123,14 @@ class OpenAILLMService(LLMServiceInterface):
                 success=False,
                 error="OpenAI service not available"
             )
-        
+
         try:
             # Convert our message format to OpenAI format
             openai_messages = [
-                {"role": msg.role, "content": msg.content} 
+                {"role": msg.role, "content": msg.content}
                 for msg in messages
             ]
-            
+
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
@@ -137,9 +138,9 @@ class OpenAILLMService(LLMServiceInterface):
                 max_tokens=max_tokens,
                 **kwargs
             )
-            
+
             raw_content = response.choices[0].message.content.strip()
-            
+
             # Try to sanitize JSON output
             try:
                 sanitized_content = extract_json_string(raw_content)
@@ -148,14 +149,14 @@ class OpenAILLMService(LLMServiceInterface):
                 # If no JSON found, use raw content
                 sanitized_content = raw_content
                 logger.debug(f"No JSON content found in OpenAI response, using raw content")
-            
+
             return LLMResponse(
                 content=sanitized_content,
                 provider="openai",
                 model=self.model,
                 success=True
             )
-            
+
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
             return LLMResponse(
@@ -165,37 +166,37 @@ class OpenAILLMService(LLMServiceInterface):
                 success=False,
                 error=str(e)
             )
-    
+
     def is_available(self) -> bool:
         """Check if OpenAI service is available"""
         return self._client is not None and self.api_key is not None
-    
+
     def get_provider_name(self) -> str:
         return "openai"
-    
+
     def get_model_name(self) -> str:
         return self.model
 
 
 class JPMCLLMService(LLMServiceInterface):
     """JPMC Custom LLM implementation - Internal service without API key"""
-    
+
     def __init__(self, api_url: Optional[str] = None, model: str = "jpmc-llm-v1"):
         self.api_url = api_url or os.getenv('JPMC_LLM_URL')
         self.model = model
         self.timeout = int(os.getenv('JPMC_LLM_TIMEOUT', '30'))
-        
+
         if self.api_url:
             logger.info(f"JPMC LLM service initialized with model: {self.model} at {self.api_url}")
         else:
             logger.warning("JPMC LLM service not configured. Check JPMC_LLM_URL")
-    
+
     def generate_text(
-        self, 
-        messages: List[LLMMessage], 
-        temperature: float = 0.3,
-        max_tokens: int = 2000,
-        **kwargs
+            self,
+            messages: List[LLMMessage],
+            temperature: float = 0.3,
+            max_tokens: int = 2000,
+            **kwargs
     ) -> LLMResponse:
         """Generate text using JPMC LLM API"""
         if not self.is_available():
@@ -206,7 +207,7 @@ class JPMCLLMService(LLMServiceInterface):
                 success=False,
                 error="JPMC LLM service not available"
             )
-        
+
         try:
             # Convert messages to a single string for JPMC LLM format
             # Combine all messages into one string with role prefixes
@@ -218,48 +219,48 @@ class JPMCLLMService(LLMServiceInterface):
                     combined_message += f"User: {msg.content}\n\n"
                 elif msg.role == "assistant":
                     combined_message += f"Assistant: {msg.content}\n\n"
-            
+
             # Remove trailing newlines
             combined_message = combined_message.strip()
-            
+
             # Prepare request payload for JPMC LLM (simplified format)
             payload = {
                 "Message": combined_message
             }
-            
+
             headers = {
                 "Content-Type": "application/json",
                 "User-Agent": "FTT-ML-Backend/1.0"
             }
-            
+
             # Log request details for debugging
             logger.info(f"JPMC LLM request to {self.api_url}/generate")
             logger.debug(f"JPMC LLM request payload: {payload}")
-            
+
             # Make request to JPMC LLM service (simplified endpoint)
             import time
             start_time = time.time()
-            
+
             response = requests.post(
                 f"{self.api_url}/generate",
                 json=payload,
                 headers=headers,
                 timeout=self.timeout
             )
-            
+
             response_time = time.time() - start_time
             logger.info(f"JPMC LLM response: status={response.status_code}, time={response_time:.2f}s")
-            
+
             if response.status_code == 200:
                 result = response.json()
 
                 # Extract AI response from "Message" field
                 raw_content = result.get("Message", "").strip()
-                
+
                 if not raw_content:
                     logger.warning("No 'Message' field found in JPMC LLM response")
                     raw_content = result.get("response", result.get("content", result.get("text", ""))).strip()
-                
+
                 # Try to sanitize JSON output
                 try:
                     sanitized_content = extract_json_string(raw_content)
@@ -268,7 +269,7 @@ class JPMCLLMService(LLMServiceInterface):
                     # If no JSON found, use raw content
                     sanitized_content = raw_content
                     logger.debug(f"No JSON content found in JPMC LLM response, using raw content")
-                
+
                 return LLMResponse(
                     content=sanitized_content,
                     provider="jpmcllm",
@@ -285,7 +286,7 @@ class JPMCLLMService(LLMServiceInterface):
                     success=False,
                     error=error_msg
                 )
-                
+
         except requests.exceptions.Timeout:
             error_msg = f"JPMC LLM API timeout after {self.timeout} seconds"
             logger.error(error_msg)
@@ -306,12 +307,12 @@ class JPMCLLMService(LLMServiceInterface):
                 success=False,
                 error=error_msg
             )
-    
+
     def is_available(self) -> bool:
         """Check if JPMC LLM service is available"""
         if not self.api_url:
             return False
-        
+
         # Optional: Add health check endpoint call
         try:
             health_response = requests.get(
@@ -322,67 +323,67 @@ class JPMCLLMService(LLMServiceInterface):
         except Exception:
             # If health check fails, assume service is available if configured
             return True
-    
+
     def get_provider_name(self) -> str:
         return "jpmcllm"
-    
+
     def get_model_name(self) -> str:
         return self.model
 
 
 class LLMServiceFactory:
     """Factory class to create and manage LLM service instances"""
-    
+
     _providers = {
         "openai": OpenAILLMService,
         "jpmcllm": JPMCLLMService,
     }
-    
+
     @classmethod
     def create_service(
-        cls, 
-        provider: str = "openai", 
-        **kwargs
+            cls,
+            provider: str = "openai",
+            **kwargs
     ) -> LLMServiceInterface:
         """Create an LLM service instance for the specified provider"""
-        
+
         provider = provider.lower()
-        
+
         if provider not in cls._providers:
             available_providers = ", ".join(cls._providers.keys())
             raise ValueError(f"Unknown LLM provider: {provider}. Available: {available_providers}")
-        
+
         service_class = cls._providers[provider]
-        
+
         # Filter kwargs to only pass constructor arguments
         if provider == "openai":
-            constructor_kwargs = {k: v for k, v in kwargs.items() 
-                                if k in ['api_key', 'model']}
+            constructor_kwargs = {k: v for k, v in kwargs.items()
+                                  if k in ['api_key', 'model']}
         elif provider == "jpmcllm":
-            constructor_kwargs = {k: v for k, v in kwargs.items() 
-                                if k in ['api_url', 'model']}
+            constructor_kwargs = {k: v for k, v in kwargs.items()
+                                  if k in ['api_url', 'model']}
         else:
             constructor_kwargs = kwargs
-        
+
         service = service_class(**constructor_kwargs)
-        
+
         if not service.is_available():
             logger.warning(f"LLM provider '{provider}' is not available. Check configuration.")
-        
+
         return service
-    
+
     @classmethod
     def get_available_providers(cls) -> List[str]:
         """Get list of all available provider names"""
         return list(cls._providers.keys())
-    
+
     @classmethod
     def get_default_service(cls) -> LLMServiceInterface:
         """Get the default LLM service (tries providers in order of preference)"""
-        
+
         # Try providers in order of preference: JPMC first, then OpenAI
         preferred_order = ["jpmcllm", "openai"]
-        
+
         for provider in preferred_order:
             try:
                 service = cls.create_service(provider)
@@ -392,7 +393,7 @@ class LLMServiceFactory:
             except Exception as e:
                 logger.warning(f"Failed to initialize {provider}: {e}")
                 continue
-        
+
         # If no providers are available, return OpenAI service (will be unavailable but handle gracefully)
         logger.error("No LLM providers are available")
         return cls.create_service("openai")
@@ -405,15 +406,15 @@ _llm_service: Optional[LLMServiceInterface] = None
 def get_llm_service() -> LLMServiceInterface:
     """Get the configured LLM service instance"""
     global _llm_service
-    
+
     if _llm_service is None:
         # Import config here to avoid circular imports
         try:
             from app.config.llm_config import LLMConfig
             config = LLMConfig.get_provider_config()
-            
+
             logger.info(f"Initializing LLM service: {config['provider']} with model {config['model']}")
-            
+
             if config['provider'] == 'jpmcllm':
                 _llm_service = LLMServiceFactory.create_service(
                     provider=config.get('provider'),
@@ -430,7 +431,7 @@ def get_llm_service() -> LLMServiceInterface:
             logger.error(f"Failed to load LLM config: {e}")
             # Fallback to default service selection
             _llm_service = LLMServiceFactory.get_default_service()
-    
+
     return _llm_service
 
 
@@ -446,7 +447,7 @@ def get_llm_generation_params() -> dict:
     try:
         from app.config.llm_config import LLMConfig
         config = LLMConfig.get_provider_config()
-        
+
         # Return only generation parameters
         return {
             'temperature': config.get('temperature', 0.3),

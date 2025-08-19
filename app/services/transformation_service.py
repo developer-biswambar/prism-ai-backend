@@ -561,7 +561,7 @@ class TransformationEngine:
             elif col_def.type == 'date' and col_def.format:
                 try:
                     from app.utils.date_utils import normalize_date_value
-                    
+
                     # Use shared date utilities for consistent date handling
                     def normalize_and_format_date(value):
                         if pd.isna(value):
@@ -573,7 +573,7 @@ class TransformationEngine:
                             parsed_date = pd.to_datetime(normalized_date_str)
                             return parsed_date.strftime(col_def.format)
                         return None
-                    
+
                     df[col_def.name] = df[col_def.id].apply(normalize_and_format_date)
                 except Exception as e:
                     logger.warning(f"Date formatting failed for column {col_def.name}: {str(e)}")

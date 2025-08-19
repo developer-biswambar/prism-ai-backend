@@ -1,7 +1,6 @@
 # backend/app/routes/regex_routes.py - AI-powered regex generation routes
 import json
 import logging
-import os
 import re
 from typing import Dict, List, Optional
 
@@ -173,10 +172,11 @@ Example response for "Extract dollar amounts":
 
     try:
         messages = [
-            LLMMessage(role="system", content="You are a regex expert that generates JavaScript-compatible regular expressions. Always respond with valid JSON containing regex, explanation, and testCases fields."),
+            LLMMessage(role="system",
+                       content="You are a regex expert that generates JavaScript-compatible regular expressions. Always respond with valid JSON containing regex, explanation, and testCases fields."),
             LLMMessage(role="user", content=user_prompt)
         ]
-        
+
         response = llm_service.generate_text(
             messages=messages,
             temperature=0.3,
@@ -185,7 +185,7 @@ Example response for "Extract dollar amounts":
 
         if not response.success:
             raise ValueError(f"LLM generation failed: {response.error}")
-            
+
         content = response.content.strip()
 
         # Parse JSON response

@@ -166,8 +166,8 @@ class ReconciliationConfigRequest(BaseModel):
     Similar to transformation requirements, this allows users to specify
     their reconciliation needs in natural language.
     """
-    requirements: str = Field(..., description="Natural language description of reconciliation requirements", 
-                             example="Reconcile bank statements with internal transaction records based on transaction ID and amount")
+    requirements: str = Field(..., description="Natural language description of reconciliation requirements",
+                              example="Reconcile bank statements with internal transaction records based on transaction ID and amount")
     source_files: List[Dict[str, Any]] = Field(..., description="Information about the two files to be reconciled")
 
 
@@ -192,8 +192,8 @@ class SourceFileInfo(BaseModel):
     """
     file_id: str = Field(..., description="Unique identifier for the uploaded file", example="file_abc123")
     filename: str = Field(..., description="Name of the uploaded file", example="bank_statements.csv")
-    columns: List[str] = Field(..., description="List of column names in the file", 
-                              example=["transaction_id", "date", "amount", "description"])
+    columns: List[str] = Field(..., description="List of column names in the file",
+                               example=["transaction_id", "date", "amount", "description"])
     totalRows: int = Field(..., description="Total number of rows in the file", example=1000)
     role: Optional[str] = Field(None, description="Role of this file in reconciliation", example="primary")
     label: Optional[str] = Field(None, description="Human-readable label for this file", example="Bank Statements")

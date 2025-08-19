@@ -1,5 +1,4 @@
 # backend/app/services/openai_service.py
-import asyncio
 import json
 import logging
 import time
@@ -378,7 +377,7 @@ Please extract the requested financial data from each text entry and return as J
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=user_prompt)
             ]
-            
+
             response = self.llm_service.generate_text(
                 messages=messages,
                 temperature=0.3,
@@ -480,13 +479,13 @@ Please extract the requested financial data from each text entry and return as J
                 LLMMessage(role="system", content="You are a test assistant."),
                 LLMMessage(role="user", content="Respond with 'OK' if you can hear me.")
             ]
-            
+
             response = self.llm_service.generate_text(
                 messages=messages,
                 max_tokens=10,
                 temperature=0
             )
-            
+
             return response.success and "OK" in response.content
         except Exception as e:
             logger.error(f"LLM connection test failed: {str(e)}")
@@ -500,7 +499,7 @@ def get_openai_client():
         if not llm_service.is_available():
             logger.warning(f"LLM service ({llm_service.get_provider_name()}) not available")
             return None
-        
+
         return llm_service
     except Exception as e:
         logger.error(f"Failed to get LLM service: {str(e)}")

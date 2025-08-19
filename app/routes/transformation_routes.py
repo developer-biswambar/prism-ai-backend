@@ -39,16 +39,16 @@ def evaluate_expression(expression: str, row_data: Dict[str, Any]) -> Any:
     """Evaluate expressions with variable substitution like {column_name} or calculations"""
     if not expression or not isinstance(expression, str):
         return expression
-    
+
     try:
         # Check if it's an expression with variables (contains curly braces)
         if '{' in expression and '}' in expression:
             import re
-            
+
             # Find all variables in curly braces
             variables = re.findall(r'\{([^}]+)\}', expression)
             result_expression = expression
-            
+
             # Replace each variable with its value
             for var in variables:
                 if var in row_data:
@@ -64,7 +64,7 @@ def evaluate_expression(expression: str, row_data: Dict[str, Any]) -> Any:
                 else:
                     logger.warning(f"Variable '{var}' not found in row data")
                     return expression  # Return original if variable not found
-            
+
             # Try to evaluate as mathematical expression first
             try:
                 # Create safe evaluation context
@@ -72,13 +72,13 @@ def evaluate_expression(expression: str, row_data: Dict[str, Any]) -> Any:
                     '__builtins__': {},
                     'abs': abs,
                     'round': round,
-                    'min': min, 
+                    'min': min,
                     'max': max,
                     'int': int,
                     'float': float,
                     'str': str
                 }
-                
+
                 # If it looks like a math expression, evaluate it
                 if any(op in result_expression for op in ['+', '-', '*', '/', '(', ')', '%']):
                     result = eval(result_expression, safe_context)
@@ -88,17 +88,17 @@ def evaluate_expression(expression: str, row_data: Dict[str, Any]) -> Any:
                     # Handle patterns like "John" "Doe" -> "John Doe"
                     result = result_expression.replace('" "', ' ').replace('"', '')
                     return result.strip()
-                    
+
             except Exception as e:
                 logger.warning(f"Could not evaluate expression '{result_expression}': {e}")
                 # Fallback: simple string concatenation
                 result = result_expression.replace('" "', ' ').replace('"', '')
                 return result.strip()
-        
+
         else:
             # No variables, return as-is
             return expression
-            
+
     except Exception as e:
         logger.error(f"Error evaluating expression '{expression}': {e}")
         return expression
@@ -273,7 +273,7 @@ def process_transformation_rules(source_data: Dict[str, pd.DataFrame], config: D
                 output_row = {}
                 # Create combined context that includes source data and progressively built output columns
                 combined_row_data = source_row.copy()
-                
+
                 for column_config in output_columns:
                     column_name = column_config.get('name', '')
                     if column_name:
@@ -680,36 +680,37 @@ async def delete_transformation_results(transformation_id: str):
 @router.post("/generate-config/")
 async def generate_transformation_config(request: dict):
     """Generate transformation configuration using AI based on user requirements"""
-    
+
     try:
         requirements = request.get('requirements', '')
         source_files = request.get('source_files', [])
-        
+
         if not requirements:
             raise HTTPException(status_code=400, detail="Requirements are required")
-        
+
         if not source_files:
             raise HTTPException(status_code=400, detail="Source files information is required")
-        
+
         # Import LLM service
         from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
-        
+
         llm_service = get_llm_service()
         if not llm_service.is_available():
-            raise HTTPException(status_code=500, detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
-        
+            raise HTTPException(status_code=500,
+                                detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
+
         # Get generation parameters from config
         generation_params = get_llm_generation_params()
-        
+
         # Prepare context about source files
         files_context = []
         for sf in source_files:
             files_context.append(f"File: {sf['filename']} (alias: {sf['alias']})")
             files_context.append(f"  Columns: {', '.join(sf['columns'])}")
             files_context.append(f"  Rows: {sf['totalRows']}")
-        
+
         files_info = "\n".join(files_context)
-        
+
         # Create prompt for OpenAI
         prompt = f"""
 You are an expert data transformation configuration generator. Based on the user requirements and source file information, generate a JSON configuration for data transformation.
@@ -875,23 +876,24 @@ Example 5 - Direct Copy (DIRECT):
 Use {{column_name}} syntax to reference column values in expressions.
 **COLUMN DEPENDENCY**: Calculated columns can reference other calculated columns defined earlier in the same rule.
 """
-        
+
         # Call LLM service
         messages = [
-            LLMMessage(role="system", content="You are a data transformation expert. Return only valid JSON configuration. ALWAYS create exactly ONE rule with ALL columns inside it unless explicitly asked for multiple rules."),
+            LLMMessage(role="system",
+                       content="You are a data transformation expert. Return only valid JSON configuration. ALWAYS create exactly ONE rule with ALL columns inside it unless explicitly asked for multiple rules."),
             LLMMessage(role="user", content=prompt)
         ]
-        
+
         response = llm_service.generate_text(
             messages=messages,
             **generation_params
         )
-        
+
         if not response.success:
             raise HTTPException(status_code=500, detail=f"LLM generation failed: {response.error}")
-        
+
         generated_config_text = response.content
-        
+
         # Parse the JSON response
         import json
         try:
@@ -904,30 +906,30 @@ Use {{column_name}} syntax to reference column values in expressions.
                 generated_config = json.loads(json_match.group())
             else:
                 raise HTTPException(status_code=500, detail="Failed to parse AI-generated configuration")
-        
+
         # Update file IDs with actual values from request (simplified for single file)
         if 'source_files' in generated_config and len(source_files) > 0:
             actual_file_id = source_files[0].get('file_id')
-            
+
             # Update the source_files with actual file_id
             if len(generated_config['source_files']) > 0:
                 generated_config['source_files'][0]['file_id'] = actual_file_id
                 generated_config['source_files'][0]['alias'] = actual_file_id  # Use file_id as alias
-            
+
             # No need to update column references since we use direct column names now
-        
+
         # Validate the generated configuration has required fields
         required_fields = ['name', 'description', 'source_files', 'row_generation_rules']
         missing_fields = [field for field in required_fields if field not in generated_config]
         if missing_fields:
             raise HTTPException(status_code=500, detail=f"AI generated config missing fields: {missing_fields}")
-        
+
         return {
             "success": True,
             "message": "Configuration generated successfully",
             "data": generated_config
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -938,7 +940,7 @@ Use {{column_name}} syntax to reference column values in expressions.
 @router.get("/health")
 async def transformation_health_check():
     """Health check for transformation service"""
-    
+
     # Check LLM service status
     try:
         from app.services.llm_service import get_llm_service
@@ -962,7 +964,7 @@ async def transformation_health_check():
         "llm_service": llm_status,
         "features": [
             "rule_based_transformation",
-            "multiple_output_datasets", 
+            "multiple_output_datasets",
             "conditional_logic",
             "dynamic_column_mapping",
             "dataset_merging",

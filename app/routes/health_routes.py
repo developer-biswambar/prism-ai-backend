@@ -4,8 +4,8 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
-from app.services.storage_service import uploaded_files, extractions
 from app.services.llm_service import get_llm_service
+from app.services.storage_service import uploaded_files, extractions
 
 # Get configuration from environment
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "20"))
@@ -23,7 +23,7 @@ async def health_check():
     llm_service = get_llm_service()
     llm_available = llm_service.is_available()
     llm_provider = llm_service.get_provider_name()
-    
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -44,14 +44,14 @@ async def get_config():
     llm_service = get_llm_service()
     llm_available = llm_service.is_available()
     llm_provider = llm_service.get_provider_name()
-    
+
     config_data = {
         "llm_configured": llm_available,
         "llm_provider": llm_provider,
         "batch_size": BATCH_SIZE,
         "multi_column_support": True,
     }
-    
+
     # Add provider-specific information
     if llm_provider == "OpenAI":
         config_data["api_key_set"] = llm_available
@@ -60,7 +60,7 @@ async def get_config():
     elif llm_provider == "JPMC LLM":
         config_data["internal_service"] = True
         config_data["service_available"] = llm_available
-    
+
     return {
         "success": True,
         "data": config_data

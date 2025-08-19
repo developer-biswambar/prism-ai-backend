@@ -12,16 +12,18 @@ from app.models.recon_models import ReconciliationResponse, ReconciliationSummar
 from app.services.reconciliation_service import OptimizedFileProcessor, optimized_reconciliation_storage
 from app.utils.uuid_generator import generate_uuid
 
+
 # Closest Match Configuration Model
 class ClosestMatchConfig(BaseModel):
     """Configuration for closest match functionality"""
     enabled: bool = False
-    specific_columns: Optional[Dict[str, str]] = None  # {"file_a_column": "file_b_column"} for specific column comparison
+    specific_columns: Optional[
+        Dict[str, str]] = None  # {"file_a_column": "file_b_column"} for specific column comparison
     min_score_threshold: Optional[float] = 30.0  # Minimum similarity score to consider
     perfect_match_threshold: Optional[float] = 99.5  # Early termination threshold
     max_comparisons: Optional[int] = None  # Limit number of comparisons for performance
     use_sampling: Optional[bool] = None  # Force enable/disable sampling for large datasets
-    
+
     @validator('use_sampling', pre=True)
     def validate_use_sampling(cls, v):
         """Handle 'NA' strings and invalid values, default to False"""
@@ -42,6 +44,7 @@ class ClosestMatchConfig(BaseModel):
             return v
         # Any other invalid type defaults to False
         return False
+
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -322,10 +325,10 @@ async def _process_reconciliation_core(
     # Only save results if there's data to save
     from app.routes.save_results_routes import SaveResultsRequest
     from app.routes.save_results_routes import save_results_to_server
-    
+
     # Check if we have meaningful data to save
     has_matched = len(reconciliation_results['matched']) > 0
-    
+
     # Only save results if we have matches - no point saving when everything is unmatched
     if has_matched:
         # Save "all" results (matched + unmatched) when we have matches
@@ -333,7 +336,7 @@ async def _process_reconciliation_core(
         try:
             save_request_matched = SaveResultsRequest(
                 result_id=recon_id,
-                file_id=recon_id+"_matched",
+                file_id=recon_id + "_matched",
                 result_type="matched",
                 process_type="reconciliation",
                 file_format="csv",
@@ -347,7 +350,7 @@ async def _process_reconciliation_core(
         try:
             save_request_unmatched_a = SaveResultsRequest(
                 result_id=recon_id,
-                file_id=recon_id+"_unmatched_a",
+                file_id=recon_id + "_unmatched_a",
                 result_type="unmatched_a",
                 process_type="reconciliation",
                 file_format="csv",
@@ -361,7 +364,7 @@ async def _process_reconciliation_core(
         try:
             save_request_unmatched_b = SaveResultsRequest(
                 result_id=recon_id,
-                file_id=recon_id+'_unmatched_b',
+                file_id=recon_id + '_unmatched_b',
                 result_type="unmatched_b",
                 process_type="reconciliation",
                 file_format="csv",
@@ -373,7 +376,8 @@ async def _process_reconciliation_core(
             print(f"⚠️ Could not save matched results: {str(e)}")
             # Continue execution - saving is optional
     else:
-        print("ℹ️ No matches found - not saving any results files. Use 'View Unmatched Records' to see why records didn't match.")
+        print(
+            "ℹ️ No matches found - not saving any results files. Use 'View Unmatched Records' to see why records didn't match.")
 
     return ReconciliationResponse(
         success=True,
@@ -584,27 +588,28 @@ async def delete_reconciliation_results(reconciliation_id: str):
 @router.post("/generate-config/")
 async def generate_reconciliation_config(request: dict):
     """Generate reconciliation configuration using AI based on user requirements"""
-    
+
     try:
         requirements = request.get('requirements', '')
         source_files = request.get('source_files', [])
-        
+
         if not requirements:
             raise HTTPException(status_code=400, detail="Requirements are required")
-        
+
         if not source_files or len(source_files) != 2:
             raise HTTPException(status_code=400, detail="Exactly 2 source files are required for reconciliation")
-        
+
         # Import LLM service
         from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
-        
+
         llm_service = get_llm_service()
         if not llm_service.is_available():
-            raise HTTPException(status_code=500, detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
-        
+            raise HTTPException(status_code=500,
+                                detail=f"LLM service ({llm_service.get_provider_name()}) not configured")
+
         # Get generation parameters from config
         generation_params = get_llm_generation_params()
-        
+
         # Prepare context about source files
         files_context = []
         for i, sf in enumerate(source_files):
@@ -612,9 +617,9 @@ async def generate_reconciliation_config(request: dict):
             files_context.append(f"File {i + 1} ({role}): {sf['filename']}")
             files_context.append(f"  Columns: {', '.join(sf['columns'])}")
             files_context.append(f"  Rows: {sf['totalRows']}")
-        
+
         files_info = "\\n".join(files_context)
-        
+
         # Create prompt for AI configuration generation
         prompt = f"""
 You are an expert financial data reconciliation configuration generator. Based on the user requirements and source file information, generate a JSON configuration for data reconciliation.
@@ -691,23 +696,24 @@ Examples of good matching:
 - Dates: {{"LeftFileColumn": "date", "RightFileColumn": "transaction_date", "MatchType": "date_equals", "ToleranceValue": 0}}
 - Names: {{"LeftFileColumn": "customer_name", "RightFileColumn": "client_name", "MatchType": "fuzzy", "ToleranceValue": 0.8}}
 """
-        
+
         # Call LLM service
         messages = [
-            LLMMessage(role="system", content="You are a financial data reconciliation expert. Return only valid JSON configuration."),
+            LLMMessage(role="system",
+                       content="You are a financial data reconciliation expert. Return only valid JSON configuration."),
             LLMMessage(role="user", content=prompt)
         ]
-        
+
         response = llm_service.generate_text(
             messages=messages,
             **generation_params
         )
-        
+
         if not response.success:
             raise HTTPException(status_code=500, detail=f"LLM generation failed: {response.error}")
-        
+
         generated_config_text = response.content
-        
+
         # Parse the JSON response
         import json
         try:
@@ -720,19 +726,19 @@ Examples of good matching:
                 generated_config = json.loads(json_match.group())
             else:
                 raise HTTPException(status_code=500, detail="Failed to parse AI-generated configuration")
-        
+
         # Validate the generated configuration has required fields
         required_fields = ['Files', 'ReconciliationRules']
         missing_fields = [field for field in required_fields if field not in generated_config]
         if missing_fields:
             raise HTTPException(status_code=500, detail=f"AI generated config missing fields: {missing_fields}")
-        
+
         # Ensure we have exactly 2 files
         if len(generated_config.get('Files', [])) != 2:
             # Fix the configuration
             file_a_columns = source_files[0].get('columns', [])
             file_b_columns = source_files[1].get('columns', [])
-            
+
             generated_config['Files'] = [
                 {
                     "Name": "FileA",
@@ -740,24 +746,26 @@ Examples of good matching:
                     "Filter": generated_config.get('Files', [{}])[0].get('Filter', [])
                 },
                 {
-                    "Name": "FileB", 
-                    "Extract": generated_config.get('Files', [{}, {}])[1].get('Extract', []) if len(generated_config.get('Files', [])) > 1 else [],
-                    "Filter": generated_config.get('Files', [{}, {}])[1].get('Filter', []) if len(generated_config.get('Files', [])) > 1 else []
+                    "Name": "FileB",
+                    "Extract": generated_config.get('Files', [{}, {}])[1].get('Extract', []) if len(
+                        generated_config.get('Files', [])) > 1 else [],
+                    "Filter": generated_config.get('Files', [{}, {}])[1].get('Filter', []) if len(
+                        generated_config.get('Files', [])) > 1 else []
                 }
             ]
-        
+
         # Ensure selected columns are present
         if 'selected_columns_file_a' not in generated_config:
             generated_config['selected_columns_file_a'] = source_files[0].get('columns', [])
         if 'selected_columns_file_b' not in generated_config:
             generated_config['selected_columns_file_b'] = source_files[1].get('columns', [])
-        
+
         return {
             "success": True,
             "message": "Reconciliation configuration generated successfully",
             "data": generated_config
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -768,7 +776,7 @@ Examples of good matching:
 @router.get("/health")
 async def reconciliation_health_check():
     """Health check for reconciliation service"""
-    
+
     # Check LLM service status
     try:
         from app.services.llm_service import get_llm_service
@@ -785,7 +793,7 @@ async def reconciliation_health_check():
             "available": False,
             "error": str(e)
         }
-    
+
     storage_count = len(optimized_reconciliation_storage.storage)
 
     return {
