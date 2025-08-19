@@ -1,14 +1,18 @@
 import io
-import logging
 import re
+import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from functools import lru_cache
 from typing import Dict, List, Optional, Set, Tuple
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from multiprocessing import cpu_count
+import threading
 
 import pandas as pd
 from fastapi import UploadFile, HTTPException
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
+import numpy as np
 
 from app.models.recon_models import PatternCondition, FileRule, ExtractRule, FilterRule, ReconciliationRule
 from app.utils.threading_config import get_reconciliation_config, get_timeout_for_operation
@@ -44,7 +48,7 @@ class OptimizedFileProcessor:
     def _process_batch_parallel(self, batch_data: Dict) -> Dict:
         """
         Process a single batch of records in parallel
-        Uses many-to-many matching by default (allows all possible matches)
+        Supports different matching modes: one_to_one, one_to_many, many_to_one, many_to_many
         Preserves all original features: rule types, column selection, closest matching
         This method is designed to be called by parallel workers
         """
@@ -55,6 +59,9 @@ class OptimizedFileProcessor:
         df_b = batch_data['df_b']
         selected_columns_a = batch_data['selected_columns_a']
         selected_columns_b = batch_data['selected_columns_b']
+        match_mode = batch_data.get('match_mode', 'many_to_many')
+        global_matched_a = batch_data.get('matched_indices_a', set())
+        global_matched_b = batch_data.get('matched_indices_b', set())
 
         matches = []
         matched_indices_a = set()
@@ -62,13 +69,25 @@ class OptimizedFileProcessor:
 
         try:
             for idx_a, row_a in batch_a.iterrows():
+                orig_index_a = row_a['_orig_index_a']
                 match_key = row_a['_match_key']
+                
+                # Check if this A record should be skipped based on match mode
+                if match_mode in ['one_to_one', 'one_to_many'] and orig_index_a in global_matched_a:
+                    continue  # Skip already matched A records for one_to_* modes
 
                 # Get potential matches from grouped data
                 if match_key in grouped_b:
                     potential_matches = grouped_b[match_key]
+                    found_match_for_a = False
 
                     for idx_b, row_b in potential_matches.iterrows():
+                        orig_index_b = row_b['_orig_index_b']
+                        
+                        # Check if this B record should be skipped based on match mode
+                        if match_mode in ['one_to_one', 'many_to_one'] and orig_index_b in global_matched_b:
+                            continue  # Skip already matched B records for *_to_one modes
+                            
                         # Check all reconciliation rules
                         all_rules_match = True
 
@@ -94,7 +113,7 @@ class OptimizedFileProcessor:
                                     break
 
                         if all_rules_match:
-                            # Create match record with selected columns (preserves original functionality)
+                            # Create match record with selected columns
                             match_record = self._create_match_record(
                                 row_a, row_b, df_a, df_b,
                                 selected_columns_a, selected_columns_b,
@@ -103,10 +122,26 @@ class OptimizedFileProcessor:
                             matches.append(match_record)
 
                             # Track matched records for unmatched calculation
-                            # Note: Many-to-many allows the same record to be in both matched and unmatched
-                            matched_indices_a.add(row_a['_orig_index_a'])
-                            matched_indices_b.add(row_b['_orig_index_b'])
-                            # No break - allows many-to-many matching (same as original)
+                            matched_indices_a.add(orig_index_a)
+                            matched_indices_b.add(orig_index_b)
+                            found_match_for_a = True
+                            
+                            # Apply match mode constraints
+                            if match_mode == 'one_to_one':
+                                # Both A and B can only match once - break both loops
+                                break
+                            elif match_mode == 'one_to_many':
+                                # Each A can match only one B, but B can match many A
+                                break  # A found its match, move to next A
+                            elif match_mode == 'many_to_one':
+                                # A can match many B, but each B can only match once
+                                # Continue to find more B matches for this A
+                                pass
+                            # many_to_many: no breaks, find all possible matches
+                    
+                    # For one_to_many mode, if A found any match, it's done
+                    if match_mode == 'one_to_many' and found_match_for_a:
+                        pass  # A can match multiple B records, so continue processing
 
         except Exception as e:
             batch_idx = batch_data.get('batch_idx', 'unknown')
@@ -191,12 +226,12 @@ class OptimizedFileProcessor:
     def _calculate_composite_similarity(self, val_a, val_b, column_type: str = "text") -> float:
         """
         Calculate composite similarity score using multiple algorithms based on data type
-        
+
         Args:
             val_a: Value from file A
-            val_b: Value from file B  
+            val_b: Value from file B
             column_type: Type of data - "text", "numeric", "date", "identifier"
-            
+
         Returns:
             Similarity score between 0.0 and 100.0
         """
@@ -330,7 +365,7 @@ class OptimizedFileProcessor:
         if any(keyword in column_name_lower for keyword in date_keywords):
             return "date"
 
-        # Numeric detection  
+        # Numeric detection
         numeric_keywords = ['amount', 'value', 'price', 'cost', 'total', 'sum', 'balance', 'quantity', 'qty']
         if any(keyword in column_name_lower for keyword in numeric_keywords):
             return "numeric"
@@ -401,7 +436,7 @@ class OptimizedFileProcessor:
         """
         Check if two values are numerically equal, handling cases like:
         - "01" vs "1" → True
-        - "09" vs "9" → True  
+        - "09" vs "9" → True
         - "007" vs "7" → True
         Only for non-date values.
         """
@@ -600,31 +635,25 @@ class OptimizedFileProcessor:
                 if match_type == "equals":
                     # Case insensitive string comparison for equals
                     if isinstance(value, str):
-                        mask = filtered_df[column].astype(str).str.lower() == str(value).lower()
-                        filtered_df = filtered_df[mask.fillna(False)]
+                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower() == str(value).lower()]
                     else:
-                        mask = filtered_df[column] == value
-                        filtered_df = filtered_df[mask.fillna(False)]
+                        filtered_df = filtered_df[filtered_df[column] == value]
                 elif match_type == "not_equals":
                     # Case insensitive string comparison for not_equals
                     if isinstance(value, str):
-                        mask = filtered_df[column].astype(str).str.lower() != str(value).lower()
-                        filtered_df = filtered_df[mask.fillna(True)]
+                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower() != str(value).lower()]
                     else:
-                        mask = filtered_df[column] != value
-                        filtered_df = filtered_df[mask.fillna(True)]
+                        filtered_df = filtered_df[filtered_df[column] != value]
                 elif match_type == "greater_than":
                     numeric_col = pd.to_numeric(filtered_df[column], errors='coerce')
-                    mask = numeric_col > value
-                    filtered_df = filtered_df[mask.fillna(False)]
+                    filtered_df = filtered_df[numeric_col > value]
                 elif match_type == "less_than":
                     numeric_col = pd.to_numeric(filtered_df[column], errors='coerce')
-                    mask = numeric_col < value
-                    filtered_df = filtered_df[mask.fillna(False)]
+                    filtered_df = filtered_df[numeric_col < value]
                 elif match_type == "contains":
                     # Case insensitive contains
-                    mask = filtered_df[column].astype(str).str.contains(str(value), case=False, na=False)
-                    filtered_df = filtered_df[mask.fillna(False)]
+                    filtered_df = filtered_df[
+                        filtered_df[column].astype(str).str.contains(str(value), case=False, na=False)]
                 elif match_type == "in":
                     if isinstance(value, str):
                         value = [v.strip() for v in value.split(',')]
@@ -632,11 +661,9 @@ class OptimizedFileProcessor:
                     if all(isinstance(v, str) for v in value):
                         # Convert both column values and filter values to lowercase for comparison
                         value_lower = [str(v).lower() for v in value]
-                        mask = filtered_df[column].astype(str).str.lower().isin(value_lower)
-                        filtered_df = filtered_df[mask.fillna(False)]
+                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower().isin(value_lower)]
                     else:
-                        mask = filtered_df[column].isin(value)
-                        filtered_df = filtered_df[mask.fillna(False)]
+                        filtered_df = filtered_df[filtered_df[column].isin(value)]
                 else:
                     self.warnings.append(f"Unknown filter match type: {match_type}")
             except Exception as e:
@@ -712,16 +739,16 @@ class OptimizedFileProcessor:
                                   recon_rules: List[ReconciliationRule],
                                   selected_columns_a: Optional[List[str]] = None,
                                   selected_columns_b: Optional[List[str]] = None,
-                                  match_mode: str = "one_to_one",
+                                  match_mode: str = "one_to_many",
                                   closest_match_config: Optional[Dict] = None) -> Dict[str, pd.DataFrame]:
         """
         Optimized reconciliation using hash-based matching for large datasets with date support
-        
+
         Args:
             match_mode: Matching behavior
-                - "one_to_one": Each record matches at most once (default, fastest)
-                - "one_to_many": File A records can match multiple File B records  
-                - "many_to_one": Multiple File A records can match same File B record
+                - "one_to_many": Each File A record matches at most one File B record, but File B records can match multiple File A records (default)
+                - "many_to_one": File A records can match multiple File B records, but each File B record matches at most one File A record
+                - "one_to_one": Each record matches at most once (fastest)
                 - "many_to_many": Full cartesian matching (slowest)
         """
         start_time = time.time()
@@ -771,118 +798,59 @@ class OptimizedFileProcessor:
         logger.info(
             f"🖥️ Hardware optimization: {self.threading_config.server_class} ({self.threading_config.available_cores} cores, {self.threading_config.optimization_level})")
 
-        # Use parallel processing for batch execution on capable systems (6+ cores)
-        # Enable parallel processing if we have multiple workers OR if system has 6+ cores
-        if (self.threading_config.server_class in ['high_end_server', 'mid_range_server', 'standard_workstation'] and
-            (total_batches > 1 or self.threading_config.available_cores >= 6)) and self.max_workers >= 2:
-            logger.info(f"🚀 Using parallel batch processing with {self.max_workers} workers for optimal performance")
+        # Use parallel processing with configured workers (minimum 1)
+        effective_workers = max(1, self.max_workers)
+        logger.info(f"🚀 Using parallel batch processing with {effective_workers} workers")
 
-            # Prepare batches for parallel processing
-            batch_tasks = []
-            grouped_b_dict = {key: group for key, group in grouped_b}
+        # Prepare batches for parallel processing
+        batch_tasks = []
+        grouped_b_dict = {key: group for key, group in grouped_b}
 
-            for batch_idx, start_idx in enumerate(range(0, len(df_a_work), batch_size), 1):
-                end_idx = min(start_idx + batch_size, len(df_a_work))
-                batch_a = df_a_work.iloc[start_idx:end_idx]
+        for batch_idx, start_idx in enumerate(range(0, len(df_a_work), batch_size), 1):
+            end_idx = min(start_idx + batch_size, len(df_a_work))
+            batch_a = df_a_work.iloc[start_idx:end_idx]
 
-                batch_data = {
-                    'batch_a': batch_a,
-                    'grouped_b': grouped_b_dict,
-                    'recon_rules': recon_rules,
-                    'df_a': df_a,
-                    'df_b': df_b,
-                    'selected_columns_a': selected_columns_a,
-                    'selected_columns_b': selected_columns_b,
-                    # Note: Using many-to-many matching by default (no restrictions on matching)
-                    'batch_idx': batch_idx
-                }
-                batch_tasks.append(batch_data)
+            batch_data = {
+                'batch_a': batch_a,
+                'grouped_b': grouped_b_dict,
+                'recon_rules': recon_rules,
+                'df_a': df_a,
+                'df_b': df_b,
+                'selected_columns_a': selected_columns_a,
+                'selected_columns_b': selected_columns_b,
+                'match_mode': match_mode,
+                'matched_indices_a': matched_indices_a,  # Pass current matched indices for constraint checking
+                'matched_indices_b': matched_indices_b,
+                'batch_idx': batch_idx
+            }
+            batch_tasks.append(batch_data)
 
-            # Process batches in parallel with optimal timeout
-            base_timeout = 300  # 5 minutes base timeout
-            timeout = get_timeout_for_operation(base_timeout, self.threading_config)
+        # Process batches in parallel with optimal timeout
+        base_timeout = 300  # 5 minutes base timeout
+        timeout = get_timeout_for_operation(base_timeout, self.threading_config)
 
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                future_to_batch = {executor.submit(self._process_batch_parallel, task): task['batch_idx']
-                                   for task in batch_tasks}
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_batch = {executor.submit(self._process_batch_parallel, task): task['batch_idx']
+                               for task in batch_tasks}
 
-                completed_batches = 0
-                for future in as_completed(future_to_batch, timeout=timeout):
-                    try:
-                        batch_result = future.result()
-                        matches.extend(batch_result['matches'])
-                        matched_indices_a.update(batch_result['matched_indices_a'])
-                        matched_indices_b.update(batch_result['matched_indices_b'])
+            completed_batches = 0
+            for future in as_completed(future_to_batch, timeout=timeout):
+                try:
+                    batch_result = future.result()
+                    matches.extend(batch_result['matches'])
+                    matched_indices_a.update(batch_result['matched_indices_a'])
+                    matched_indices_b.update(batch_result['matched_indices_b'])
 
-                        completed_batches += 1
-                        if completed_batches % 10 == 0 or completed_batches == total_batches:
-                            progress_pct = (completed_batches / total_batches) * 100
-                            logger.info(
-                                f"📈 Completed {completed_batches}/{total_batches} batches ({progress_pct:.1f}%) - {len(matches):,} matches found")
+                    completed_batches += 1
+                    if completed_batches % 10 == 0 or completed_batches == total_batches:
+                        progress_pct = (completed_batches / total_batches) * 100
+                        logger.info(
+                            f"📈 Completed {completed_batches}/{total_batches} batches ({progress_pct:.1f}%) - {len(matches):,} matches found")
 
-                    except Exception as e:
-                        batch_idx = future_to_batch[future]
-                        logger.error(f"❌ Error processing batch {batch_idx}: {e}")
-                        self.warnings.append(f"Batch {batch_idx} failed: {e}")
-        else:
-            # Fall back to sequential processing for smaller datasets or limited hardware
-            logger.info(f"📝 Using sequential processing for {total_batches} batches")
-
-            processed_records = 0
-            for batch_idx, start_idx in enumerate(range(0, len(df_a_work), batch_size), 1):
-                end_idx = min(start_idx + batch_size, len(df_a_work))
-                batch_a = df_a_work.iloc[start_idx:end_idx]
-
-                # Progress logging every 10 batches or for large datasets
-                if batch_idx % 10 == 0 or total_batches <= 10:
-                    progress_pct = (batch_idx / total_batches) * 100
-                    logger.info(
-                        f"📈 Processing batch {batch_idx}/{total_batches} ({progress_pct:.1f}%) - {len(matches):,} matches found so far")
-
-                for idx_a, row_a in batch_a.iterrows():
-                    match_key = row_a['_match_key']
-
-                    # Get potential matches from grouped data
-                    if match_key in grouped_b.groups:
-                        potential_matches = grouped_b.get_group(match_key)
-
-                        for idx_b, row_b in potential_matches.iterrows():
-                            # Check all reconciliation rules
-                            all_rules_match = True
-
-                            for rule in recon_rules:
-                                val_a = row_a[rule.LeftFileColumn]
-                                val_b = row_b[rule.RightFileColumn]
-
-                                if rule.MatchType.lower() == "equals":
-                                    if not self._check_equals_match(val_a, val_b):
-                                        all_rules_match = False
-                                        break
-                                elif rule.MatchType.lower() == "date_equals":
-                                    if not self._check_date_equals_match(val_a, val_b):
-                                        all_rules_match = False
-                                        break
-                                elif rule.MatchType.lower() == "tolerance":
-                                    if not self._check_tolerance_match(val_a, val_b, rule.ToleranceValue):
-                                        all_rules_match = False
-                                        break
-                                elif rule.MatchType.lower() == "fuzzy":
-                                    if not self._check_fuzzy_match(val_a, val_b, rule.ToleranceValue):
-                                        all_rules_match = False
-                                        break
-
-                            if all_rules_match:
-                                # Create match record with selected columns
-                                match_record = self._create_match_record(
-                                    row_a, row_b, df_a, df_b,
-                                    selected_columns_a, selected_columns_b,
-                                    recon_rules
-                                )
-                                matches.append(match_record)
-
-                                # Track matched records for unmatched calculation
-                                matched_indices_a.add(row_a['_orig_index_a'])
-                                matched_indices_b.add(row_b['_orig_index_b'])
+                except Exception as e:
+                    batch_idx = future_to_batch[future]
+                    logger.error(f"❌ Error processing batch {batch_idx}: {e}")
+                    self.warnings.append(f"Batch {batch_idx} failed: {e}")
 
         # Create result DataFrames with selected columns
         matched_df = pd.DataFrame(matches) if matches else pd.DataFrame()
@@ -953,7 +921,7 @@ class OptimizedFileProcessor:
                              closest_match_config: Optional[Dict] = None) -> pd.DataFrame:
         """
         Add closest match columns to unmatched records using optimized composite similarity scoring
-        
+
         PERFORMANCE OPTIMIZATIONS:
         - Early termination on perfect matches
         - Column type caching
@@ -961,13 +929,13 @@ class OptimizedFileProcessor:
         - Batch processing for large datasets
         - Memory-efficient processing
         - Hardware-aware thread allocation
-        
+
         Args:
             unmatched_source: Unmatched records from source file
             full_target: All records from target file (both matched and unmatched for comparison)
             recon_rules: Reconciliation rules to determine which columns to compare
             source_file: 'A' or 'B' to indicate which file is the source
-            
+
         Returns:
             DataFrame with closest match information added
         """
@@ -1228,13 +1196,15 @@ class OptimizedFileProcessor:
                                              num_threads: int = None) -> pd.DataFrame:
         """
         Batch processing for very large datasets with parallel processing
-        
+
         ADVANCED OPTIMIZATIONS:
         - Parallel processing using multiprocessing
         - Intelligent batching
         - Memory-efficient chunk processing
         - Advanced caching and indexing
         """
+        from multiprocessing import Pool, cpu_count
+        import multiprocessing as mp
         import gc
         import time
 
@@ -1306,23 +1276,11 @@ class OptimizedFileProcessor:
         num_processes = num_threads or 1
         logger.info(f"🔧 Using {num_processes} processes (from threading configuration)")
 
-        # Calculate optimal batch size based on dataset size and thread count
-        optimal_batch_size = max(50, min(500, total_records // num_processes)) if num_processes > 1 else total_records
+        # Use batch size from threading configuration
+        optimal_batch_size = self.batch_size
 
-        # Memory-aware optimization
-        estimated_memory_mb = ((total_records * len(full_target)) / 1_000_000) * 0.1  # Rough estimate in MB
-
-        # Adjust batch processing based on available memory
-        if estimated_memory_mb > 4000:  # > 4GB estimated usage
-            logger.info(f"📈 Large memory requirement detected ({estimated_memory_mb:.0f}MB estimated)")
-            # Use smaller batches for memory efficiency
-            optimal_batch_size = max(25, optimal_batch_size // 2)
-            logger.info(f"⚡ Reduced batch size to {optimal_batch_size} for memory efficiency")
-
-        logger.info(f"🔧 Final Configuration: {num_processes} processes, batch size: {optimal_batch_size}")
+        logger.info(f"🔧 Final Configuration: {num_processes} processes, batch size: {optimal_batch_size} (from threading config)")
         logger.info(f"📊 Processing {total_records:,} records against {len(full_target):,} targets")
-        logger.info(
-            f"💾 Estimated memory impact: {estimated_memory_mb:.0f}MB ({(total_records * len(full_target)) / 1_000_000:.1f}M potential comparisons)")
 
         # Split unmatched_source into batches
         batches = []
@@ -1389,20 +1347,7 @@ class OptimizedFileProcessor:
 
             for start_idx, batch_result in processed_batches:
                 end_idx = start_idx + len(batch_result)
-                try:
-                    # Safe assignment that handles NA values properly
-                    for col in batch_result.columns:
-                        if col in result_df.columns:
-                            result_df.loc[result_df.index[start_idx:end_idx], col] = batch_result[col].values
-                except Exception as e:
-                    logger.warning(f"Error reassembling batch {start_idx}: {str(e)}")
-                    # Fallback: update specific columns that are known to be safe
-                    for col in ['closest_match_record', 'closest_match_score', 'closest_match_details']:
-                        if col in batch_result.columns and col in result_df.columns:
-                            try:
-                                result_df.loc[result_df.index[start_idx:end_idx], col] = batch_result[col].values
-                            except:
-                                pass  # Skip problematic columns
+                result_df.iloc[start_idx:end_idx] = batch_result
 
             total_time = time.time() - start_time
             batch_total_time = time.time() - batch_start_time
@@ -1432,7 +1377,7 @@ class OptimizedFileProcessor:
     def _format_closest_match_details(self, column_scores: dict) -> str:
         """
         Format closest match details in a readable format
-        
+
         Input: {'amount_vs_total_amount': {'score': 99.99, 'source_value': 899.95, 'target_value': 899.99, 'type': 'numeric'}}
         Output: 'amount: 899.95->899.99'
         """
@@ -1481,7 +1426,7 @@ class OptimizedFileProcessor:
                                              closest_match_config: Optional[Dict] = None) -> pd.DataFrame:
         """
         Ultra-optimized closest match with pre-filtering and vectorized operations
-        
+
         PERFORMANCE OPTIMIZATIONS:
         - Pre-filter with exact match indexing (10-100x speedup)
         - Pre-normalize string columns (2-5x speedup)
@@ -1597,7 +1542,7 @@ class OptimizedFileProcessor:
 
             # Build target index with progress tracking
             target_index = defaultdict(list)
-            batch_size = 10000
+            batch_size = self.batch_size
             total_rows = len(target_normalized)
 
             for batch_start in range(0, total_rows, batch_size):
@@ -1837,7 +1782,7 @@ class OptimizedFileProcessor:
 
                 # Two-phase closest match: exact filters + similarity scoring
 
-                # Phase 1: Check exact match filters (non-similarity columns) 
+                # Phase 1: Check exact match filters (non-similarity columns)
                 if closest_match_config and closest_match_config.specific_columns:
                     # Get all reconciliation columns for exact match filtering
                     all_recon_columns = []
