@@ -58,13 +58,16 @@ def get_threading_config(workload_type: str = WorkloadType.GENERAL,
     Returns:
         ThreadingConfig with the specified settings
     """
-    # Check environment variable for FTT_ML_CORES
+    # Check environment variables
     env_cores = os.getenv('FTT_ML_CORES')
     env_max_workers = int(env_cores) if env_cores and env_cores.isdigit() else None
     
-    # Use new parameters if provided, otherwise fall back to overrides, then env variable, then defaults
+    env_batch_size_str = os.getenv('BATCH_SIZE')
+    env_batch_size = int(env_batch_size_str) if env_batch_size_str and env_batch_size_str.isdigit() else None
+    
+    # Use parameters if provided, otherwise fall back to overrides, then env variables, then defaults
     final_max_workers = max_workers or max_workers_override or env_max_workers or 4
-    final_batch_size = batch_size or batch_size_override or 1000
+    final_batch_size = batch_size or batch_size_override or env_batch_size or 3000
     
     config = ThreadingConfig(
         max_workers=final_max_workers,
