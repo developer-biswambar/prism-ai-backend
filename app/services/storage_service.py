@@ -56,16 +56,25 @@ class LocalStorageBackend(StorageBackend):
         logger.info("LocalStorage initialized: Using in-memory dictionary storage")
 
     def get(self, key: str) -> Optional[Any]:
-        logger.debug(f"LocalStorage GET: {key}")
-        return self.storage.get(key)
+        logger.info(f"LocalStorage RETRIEVE: {key}")
+        result = self.storage.get(key)
+        if result:
+            logger.info(f"LocalStorage RETRIEVE SUCCESS: {key}")
+        else:
+            logger.info(f"LocalStorage RETRIEVE NOT_FOUND: {key}")
+        return result
 
     def set(self, key: str, value: Any) -> bool:
         try:
+            import sys
+            data_size = sys.getsizeof(value) if value else 0
+            logger.info(f"LocalStorage UPLOAD: {key} (size: {data_size} bytes)")
+            
             self.storage[key] = value
-            logger.debug(f"LocalStorage SET: {key} (size: {len(str(value)) if value else 0} chars)")
+            logger.info(f"LocalStorage UPLOAD SUCCESS: {key}")
             return True
         except Exception as e:
-            logger.error(f"LocalStorage SET failed for key {key}: {e}")
+            logger.error(f"LocalStorage UPLOAD FAILED: {key} - {e}")
             return False
 
     def delete(self, key: str) -> bool:
@@ -173,25 +182,25 @@ class S3StorageBackend(StorageBackend):
         start_time = time.time()
         try:
             s3_key = self._get_s3_key(key)
-            logger.debug(f"S3Storage GET: {key} -> {s3_key}")
+            logger.info(f"S3Storage RETRIEVE: {key} from bucket {self.bucket_name}")
             
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
             data = pickle.loads(response['Body'].read())
             
             elapsed = time.time() - start_time
-            logger.debug(f"S3Storage GET success: {key} in {elapsed:.3f}s")
+            logger.info(f"S3Storage RETRIEVE SUCCESS: {key} in {elapsed:.3f}s")
             return data
             
         except ClientError as e:
             elapsed = time.time() - start_time
             if e.response['Error']['Code'] == 'NoSuchKey':
-                logger.debug(f"S3Storage GET: {key} not found in {elapsed:.3f}s")
+                logger.info(f"S3Storage RETRIEVE NOT_FOUND: {key} in {elapsed:.3f}s")
                 return None
-            logger.error(f"S3Storage GET failed: {key} in {elapsed:.3f}s - {e}")
+            logger.error(f"S3Storage RETRIEVE FAILED: {key} in {elapsed:.3f}s - {e}")
             return None
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(f"S3Storage GET deserialization failed: {key} in {elapsed:.3f}s - {e}")
+            logger.error(f"S3Storage RETRIEVE ERROR: {key} deserialization failed in {elapsed:.3f}s - {e}")
             return None
 
     def set(self, key: str, value: Any) -> bool:
@@ -202,7 +211,7 @@ class S3StorageBackend(StorageBackend):
             serialized_data = pickle.dumps(value)
             data_size = len(serialized_data)
             
-            logger.debug(f"S3Storage SET: {key} -> {s3_key} (size: {data_size} bytes)")
+            logger.info(f"S3Storage UPLOAD: {key} to bucket {self.bucket_name} (size: {data_size} bytes)")
 
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -215,12 +224,12 @@ class S3StorageBackend(StorageBackend):
             )
             
             elapsed = time.time() - start_time
-            logger.debug(f"S3Storage SET success: {key} in {elapsed:.3f}s ({data_size} bytes)")
+            logger.info(f"S3Storage UPLOAD SUCCESS: {key} uploaded in {elapsed:.3f}s ({data_size} bytes)")
             return True
             
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(f"S3Storage SET failed: {key} in {elapsed:.3f}s - {e}")
+            logger.error(f"S3Storage UPLOAD FAILED: {key} failed in {elapsed:.3f}s - {e}")
             return False
 
     def delete(self, key: str) -> bool:
