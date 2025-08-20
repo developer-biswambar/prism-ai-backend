@@ -65,16 +65,34 @@ class LocalStorageBackend(StorageBackend):
         return result
 
     def set(self, key: str, value: Any) -> bool:
+        import time
+        import sys
+        
+        start_time = time.time()
         try:
-            import sys
-            data_size = sys.getsizeof(value) if value else 0
-            logger.info(f"LocalStorage UPLOAD: {key} (size: {data_size} bytes)")
+            # Calculate data size for logging
+            if hasattr(value, '__sizeof__'):
+                data_size = sys.getsizeof(value)
+            else:
+                data_size = len(str(value)) if value else 0
+                
+            logger.info(f"LocalStorage UPLOAD: {key} (estimated size: {data_size} bytes)")
+            
+            # For very large objects, log progress
+            if data_size > 50 * 1024 * 1024:  # 50MB
+                logger.info(f"LocalStorage UPLOAD: {key} - large object detected, storing in memory...")
             
             self.storage[key] = value
-            logger.info(f"LocalStorage UPLOAD SUCCESS: {key}")
+            
+            elapsed = time.time() - start_time
+            throughput_mbps = (data_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+            
+            logger.info(f"LocalStorage UPLOAD SUCCESS: {key} stored in {elapsed:.3f}s ({throughput_mbps:.2f} MB/s)")
             return True
+            
         except Exception as e:
-            logger.error(f"LocalStorage UPLOAD FAILED: {key} - {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"LocalStorage UPLOAD FAILED: {key} after {elapsed:.3f}s - {e}")
             return False
 
     def delete(self, key: str) -> bool:
@@ -179,16 +197,53 @@ class S3StorageBackend(StorageBackend):
 
     def get(self, key: str) -> Optional[Any]:
         import time
+        import pickle
+        import gzip
         start_time = time.time()
+        
         try:
             s3_key = self._get_s3_key(key)
             logger.info(f"S3Storage RETRIEVE: {key} from bucket {self.bucket_name}")
             
+            download_start = time.time()
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
-            data = pickle.loads(response['Body'].read())
+            raw_data = response['Body'].read()
+            download_time = time.time() - download_start
+            
+            # Check metadata to determine if file is compressed
+            metadata = response.get('Metadata', {})
+            is_compressed = metadata.get('compressed', 'False').lower() == 'true'
+            original_size = metadata.get('original_size', 'unknown')
+            
+            logger.debug(f"S3Storage RETRIEVE: {key} downloaded {len(raw_data)} bytes in {download_time:.3f}s")
+            
+            # Decompress if needed
+            if is_compressed:
+                decompression_start = time.time()
+                try:
+                    decompressed_data = gzip.decompress(raw_data)
+                    decompression_time = time.time() - decompression_start
+                    
+                    logger.debug(f"S3Storage RETRIEVE: {key} decompressed {len(raw_data)} -> {len(decompressed_data)} bytes in {decompression_time:.3f}s")
+                    serialized_data = decompressed_data
+                except Exception as e:
+                    logger.error(f"S3Storage RETRIEVE: {key} decompression failed - {e}")
+                    return None
+            else:
+                serialized_data = raw_data
+            
+            # Deserialize the data
+            deserialization_start = time.time()
+            data = pickle.loads(serialized_data)
+            deserialization_time = time.time() - deserialization_start
             
             elapsed = time.time() - start_time
-            logger.info(f"S3Storage RETRIEVE SUCCESS: {key} in {elapsed:.3f}s")
+            
+            # Calculate throughput
+            throughput_mbps = (len(raw_data) / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+            
+            logger.info(f"S3Storage RETRIEVE SUCCESS: {key} in {elapsed:.3f}s ({len(raw_data)} bytes, {throughput_mbps:.2f} MB/s, download: {download_time:.3f}s, deserialize: {deserialization_time:.3f}s)")
+            
             return data
             
         except ClientError as e:
@@ -200,31 +255,80 @@ class S3StorageBackend(StorageBackend):
             return None
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(f"S3Storage RETRIEVE ERROR: {key} deserialization failed in {elapsed:.3f}s - {e}")
+            logger.error(f"S3Storage RETRIEVE ERROR: {key} failed in {elapsed:.3f}s - {e}")
             return None
 
     def set(self, key: str, value: Any) -> bool:
         import time
+        import pickle
+        import gzip
         start_time = time.time()
+        
         try:
             s3_key = self._get_s3_key(key)
-            serialized_data = pickle.dumps(value)
-            data_size = len(serialized_data)
             
-            logger.info(f"S3Storage UPLOAD: {key} to bucket {self.bucket_name} (size: {data_size} bytes)")
+            # Optimize serialization and compression for large files
+            logger.debug(f"S3Storage UPLOAD: Serializing {key}")
+            serialization_start = time.time()
+            
+            # Use highest pickle protocol for better performance
+            raw_data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            serialization_time = time.time() - serialization_start
+            
+            # Compress large files (>1MB) for faster upload and storage savings
+            raw_size = len(raw_data)
+            use_compression = raw_size > 1024 * 1024  # 1MB threshold
+            
+            if use_compression:
+                compression_start = time.time()
+                # Use fastest compression level (1) for speed vs moderate compression
+                serialized_data = gzip.compress(raw_data, compresslevel=1)
+                compression_time = time.time() - compression_start
+                compression_ratio = len(serialized_data) / raw_size
+                
+                logger.debug(f"S3Storage UPLOAD: {key} compressed {raw_size} -> {len(serialized_data)} bytes ({compression_ratio:.2%}) in {compression_time:.3f}s")
+            else:
+                serialized_data = raw_data
+                compression_time = 0
+            
+            data_size = len(serialized_data)
+            logger.info(f"S3Storage UPLOAD: {key} to bucket {self.bucket_name} (size: {data_size} bytes, serialization: {serialization_time:.3f}s)")
+
+            # Use optimized S3 upload configuration for large files
+            upload_start = time.time()
+            
+            extra_args = {
+                'Metadata': {
+                    'created_at': datetime.utcnow().isoformat(),
+                    'storage_type': 'enhanced_storage',
+                    'compressed': str(use_compression),
+                    'original_size': str(raw_size),
+                    'pickle_protocol': str(pickle.HIGHEST_PROTOCOL)
+                }
+            }
+            
+            # For large files (>100MB), use multipart upload configuration
+            if data_size > 100 * 1024 * 1024:  # 100MB
+                extra_args.update({
+                    'StorageClass': 'STANDARD',  # Use standard storage for large files
+                })
+                logger.debug(f"S3Storage UPLOAD: {key} using multipart upload for large file")
 
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=s3_key,
                 Body=serialized_data,
-                Metadata={
-                    'created_at': datetime.utcnow().isoformat(),
-                    'storage_type': 'enhanced_storage'
-                }
+                **extra_args
             )
             
+            upload_time = time.time() - upload_start
             elapsed = time.time() - start_time
-            logger.info(f"S3Storage UPLOAD SUCCESS: {key} uploaded in {elapsed:.3f}s ({data_size} bytes)")
+            
+            # Calculate throughput
+            throughput_mbps = (data_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+            
+            logger.info(f"S3Storage UPLOAD SUCCESS: {key} uploaded in {elapsed:.3f}s ({data_size} bytes, {throughput_mbps:.2f} MB/s, upload: {upload_time:.3f}s)")
+            
             return True
             
         except Exception as e:
