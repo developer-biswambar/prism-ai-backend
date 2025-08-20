@@ -483,6 +483,40 @@ class EnhancedStorage:
         for key in list(self.keys()):
             del self[key]
 
+    def keys_only(self):
+        """Get only the keys without loading values - optimized for listing"""
+        return self.backend.list_keys()
+
+    def get_metadata_only(self, key: str, metadata_path: str = None):
+        """Get only metadata from stored objects without loading full data
+        
+        Args:
+            key: Storage key
+            metadata_path: Dot-separated path to metadata (e.g., 'info' for file_data['info'])
+        
+        Returns:
+            Metadata object or None if not found
+        """
+        try:
+            full_data = self.backend.get(key)
+            if full_data is None:
+                return None
+                
+            if metadata_path:
+                # Navigate to metadata using dot notation
+                result = full_data
+                for path_part in metadata_path.split('.'):
+                    result = result.get(path_part) if isinstance(result, dict) else None
+                    if result is None:
+                        return None
+                return result
+            else:
+                return full_data
+                
+        except Exception as e:
+            logger.error(f"Error getting metadata for {key}: {e}")
+            return None
+
 
 def create_storage_backend() -> StorageBackend:
     """Factory function to create appropriate storage backend based on configuration"""

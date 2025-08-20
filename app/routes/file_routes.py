@@ -594,7 +594,7 @@ async def analyze_excel_sheets(file: UploadFile = File(...)):
 @router.post("/validate-name")
 async def validate_file_name(request: dict):
     """
-    Validate if a filename is available
+    Validate if a filename is available - optimized to only load metadata
     """
     try:
         filename = request.get('filename', '').strip()
@@ -605,14 +605,21 @@ async def validate_file_name(request: dict):
                 "error": "Filename is required"
             }
 
-        # Check if name already exists
-        for file_id, file_data in uploaded_files.items():
-            existing_name = file_data["info"].get("custom_name") or file_data["info"]["filename"]
-            if existing_name.lower() == filename.lower():
-                return {
-                    "isValid": False,
-                    "error": "A file with this name already exists"
-                }
+        # Get only file keys first (much faster than loading all data)
+        file_keys = uploaded_files.keys_only()
+        
+        logger.debug(f"FileRoutes: Validating filename '{filename}' against {len(file_keys)} files (metadata-only)")
+
+        # Check if name already exists - only load metadata for each file
+        for file_id in file_keys:
+            file_info = uploaded_files.get_metadata_only(file_id, "info")
+            if file_info:
+                existing_name = file_info.get("custom_name") or file_info.get("filename")
+                if existing_name and existing_name.lower() == filename.lower():
+                    return {
+                        "isValid": False,
+                        "error": "A file with this name already exists"
+                    }
 
         return {
             "isValid": True,
@@ -740,13 +747,15 @@ async def upload_file(
         # Determine final filename
         final_filename = custom_name.strip() if custom_name else file.filename
 
-        # Validate custom name if provided
+        # Validate custom name if provided - optimized to only load metadata
         if custom_name:
-            # Check if custom name already exists
-            for existing_file_id, existing_file_data in uploaded_files.items():
-                existing_name = existing_file_data["info"].get("custom_name") or existing_file_data["info"]["filename"]
-                if existing_name.lower() == custom_name.strip().lower():
-                    raise HTTPException(400, f"A file with the name '{custom_name}' already exists")
+            file_keys = uploaded_files.keys_only()
+            for existing_file_id in file_keys:
+                existing_file_info = uploaded_files.get_metadata_only(existing_file_id, "info")
+                if existing_file_info:
+                    existing_name = existing_file_info.get("custom_name") or existing_file_info.get("filename")
+                    if existing_name and existing_name.lower() == custom_name.strip().lower():
+                        raise HTTPException(400, f"A file with the name '{custom_name}' already exists")
 
         file_info = {
             "file_id": file_id,
@@ -1005,17 +1014,26 @@ async def select_sheet(file_id: str, request: UpdateSheetRequest):
 
 @router.get("/")
 async def list_files():
-    """List all uploaded files with enhanced information"""
+    """List all uploaded files with enhanced information - optimized to only load metadata"""
     try:
         files = []
         total_rows = 0
         total_size_mb = 0
 
-        for file_id, file_data in uploaded_files.items():
-            file_info = file_data["info"].copy()
-            files.append(file_info)
-            total_rows += file_info.get("total_rows", 0)
-            total_size_mb += file_info.get("file_size_mb", 0)
+        # Get only file keys first (much faster than loading all data)
+        file_keys = uploaded_files.keys_only()
+        
+        logger.info(f"FileRoutes: Listing {len(file_keys)} files (metadata-only)")
+
+        # Load only the metadata for each file, not the actual DataFrame data
+        for file_id in file_keys:
+            file_info = uploaded_files.get_metadata_only(file_id, "info")
+            if file_info:
+                files.append(file_info.copy())
+                total_rows += file_info.get("total_rows", 0)
+                total_size_mb += file_info.get("file_size_mb", 0)
+
+        logger.info(f"FileRoutes: Successfully listed {len(files)} files without loading DataFrame data")
 
         return {
             "success": True,
