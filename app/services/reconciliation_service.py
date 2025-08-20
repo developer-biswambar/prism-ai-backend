@@ -2051,7 +2051,12 @@ class OptimizedReconciliationStorage:
             logger.debug(f"ReconciliationStorage STORE: {recon_id} - estimated serialized size: {estimated_size / 1024:.1f}KB")
 
             # Use centralized storage (local or S3 based on configuration)
-            success = self.storage_backend.set(recon_id, optimized_results)
+            try:
+                self.storage_backend[recon_id] = optimized_results
+                success = True
+            except Exception as storage_error:
+                logger.error(f"ReconciliationStorage STORE FAILED: {recon_id} - storage error: {storage_error}")
+                success = False
             
             elapsed = time.time() - start_time
             if success:
@@ -2105,13 +2110,13 @@ class OptimizedReconciliationStorage:
         try:
             logger.debug(f"ReconciliationStorage: Deleting results for {recon_id}")
             
-            success = self.storage_backend.delete(recon_id)
-            if success:
+            try:
+                del self.storage_backend[recon_id]
                 logger.debug(f"ReconciliationStorage: Successfully deleted results for {recon_id}")
-            else:
+                return True
+            except KeyError:
                 logger.debug(f"ReconciliationStorage: Results for {recon_id} not found for deletion")
-                
-            return success
+                return False
             
         except Exception as e:
             logger.error(f"ReconciliationStorage: Error deleting results for {recon_id}: {e}")
