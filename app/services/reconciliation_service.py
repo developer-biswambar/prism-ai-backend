@@ -216,8 +216,10 @@ class OptimizedFileProcessor:
                     if len(non_null_values) > 0:
                         # Check if all values are integers (no decimal part)
                         if all(float(val).is_integer() for val in non_null_values):
-                            # Convert to Int64 (pandas nullable integer type) to handle NaN values
-                            df[col] = df[col].astype('Int64')
+                            # Keep as float64 to avoid pd.NA boolean evaluation issues
+                            # The nullable Int64 type uses pd.NA which causes "boolean value of NA is ambiguous" errors
+                            # Using float64 with np.nan is safer for boolean operations in closest match analysis
+                            pass  # Keep as float64 with np.nan instead of converting to nullable Int64
 
             return df
         except Exception as e:
@@ -745,9 +747,10 @@ class OptimizedFileProcessor:
 
         # Create composite key for exact matches only (dates and tolerance handled separately)
         if exact_match_cols:
-            # Make match key case insensitive by converting to lowercase
-            df_work['_match_key'] = df_work[exact_match_cols].astype(str).apply(lambda x: x.str.lower()).agg('|'.join,
-                                                                                                             axis=1)
+            # Handle NaN values properly when creating match keys
+            # Replace NaN with empty string before string operations to prevent boolean errors
+            match_cols_clean = df_work[exact_match_cols].fillna('')
+            df_work['_match_key'] = match_cols_clean.astype(str).apply(lambda x: x.str.lower()).agg('|'.join, axis=1)
         else:
             df_work['_match_key'] = df_work.index.astype(str)
 
@@ -879,14 +882,18 @@ class OptimizedFileProcessor:
         # Unmatched records are calculated based on matched_indices sets
         # Use safer boolean indexing to avoid NA ambiguity
         unmatched_mask_a = df_a_work['_orig_index_a'].isin(matched_indices_a)
+        # Explicitly handle potential NaN values in boolean mask
+        unmatched_mask_a = unmatched_mask_a.fillna(False)
         unmatched_a = self._select_result_columns(
-            df_a_work[~unmatched_mask_a.fillna(False)].drop(['_orig_index_a', '_match_key'], axis=1),
+            df_a_work[~unmatched_mask_a].drop(['_orig_index_a', '_match_key'], axis=1),
             selected_columns_a, recon_rules, 'A'
         )
 
         unmatched_mask_b = df_b_work['_orig_index_b'].isin(matched_indices_b)
+        # Explicitly handle potential NaN values in boolean mask
+        unmatched_mask_b = unmatched_mask_b.fillna(False)
         unmatched_b = self._select_result_columns(
-            df_b_work[~unmatched_mask_b.fillna(False)].drop(['_orig_index_b', '_match_key'], axis=1),
+            df_b_work[~unmatched_mask_b].drop(['_orig_index_b', '_match_key'], axis=1),
             selected_columns_b, recon_rules, 'B'
         )
 
@@ -1052,6 +1059,9 @@ class OptimizedFileProcessor:
 
         logger.info(
             f"⚙️ Performance thresholds: Min score = {MIN_SCORE_THRESHOLD}%, Perfect match = {PERFECT_MATCH_THRESHOLD}%")
+
+        # Initialize similarity cache for performance optimization
+        similarity_cache = {}
 
         processed_count = 0
         matches_found = 0
@@ -1233,17 +1243,26 @@ class OptimizedFileProcessor:
         available_cores = threading_config.available_cores
 
         logger.info(f"🚀 Starting advanced batch processing for large dataset...")
+        logger.info(f"📊 Input parameters: unmatched_source={unmatched_source.shape}, full_target={full_target.shape}")
+        logger.info(f"📊 Source file: {source_file}, num_threads: {num_threads}")
+        logger.info(f"📊 Data types in unmatched_source: {dict(unmatched_source.dtypes)}")
+        logger.info(f"📊 Data types in full_target: {dict(full_target.dtypes)}")
         batch_start_time = time.time()
 
         # Make a copy to avoid modifying the original
+        logger.info(f"📋 Creating result DataFrame copy from unmatched_source...")
         result_df = unmatched_source.copy()
+        logger.info(f"📋 Result DataFrame shape: {result_df.shape}, dtypes: {dict(result_df.dtypes)}")
 
         # Initialize closest match columns
+        logger.info(f"📋 Initializing closest match columns...")
         result_df['closest_match_record'] = None
         result_df['closest_match_score'] = 0.0
         result_df['closest_match_details'] = None
+        logger.info(f"📋 Closest match columns added successfully")
 
         # Get columns to compare - use specific columns from config if provided, otherwise use reconciliation rules
+        logger.info(f"🔍 Determining comparison columns...")
         compare_columns = []
 
         if closest_match_config and closest_match_config.specific_columns:
@@ -1275,18 +1294,27 @@ class OptimizedFileProcessor:
                 if source_col in unmatched_source.columns and target_col in full_target.columns:
                     compare_columns.append((source_col, target_col))
 
+        logger.info(f"🔍 Final comparison columns determined: {compare_columns}")
         if not compare_columns:
             logger.warning(f"⚠️ No comparable columns found for batch closest match analysis")
+            logger.warning(f"⚠️ Returning original result_df with shape: {result_df.shape}")
             return result_df
 
         # Pre-compute column types for caching
+        logger.info(f"🏷️ Pre-computing column types for caching...")
         column_type_cache = {}
         for source_col, target_col in compare_columns:
             if source_col not in column_type_cache:
-                column_type_cache[source_col] = self._detect_column_type(
-                    source_col,
-                    unmatched_source[source_col].head(10).tolist()
-                )
+                logger.info(f"🏷️ Detecting type for column: {source_col}")
+                try:
+                    sample_values = unmatched_source[source_col].head(10).tolist()
+                    logger.info(f"🏷️ Sample values for {source_col}: {sample_values}")
+                    column_type_cache[source_col] = self._detect_column_type(source_col, sample_values)
+                    logger.info(f"🏷️ Detected type for {source_col}: {column_type_cache[source_col]}")
+                except Exception as e:
+                    logger.error(f"❌ Error detecting type for column {source_col}: {e}")
+                    column_type_cache[source_col] = "text"  # Default fallback
+        logger.info(f"🏷️ Column type cache completed: {column_type_cache}")
 
         # Determine optimal batch size and number of processes using threading config
         total_records = len(unmatched_source)
@@ -1362,11 +1390,45 @@ class OptimizedFileProcessor:
                         processed_batches.append((start_idx, original_batch))
 
             # Reassemble results
+            logger.info(f"🔧 Starting result reassembly for {len(processed_batches)} processed batches...")
+            logger.info(f"🔧 result_df shape before reassembly: {result_df.shape}")
+            logger.info(f"🔧 result_df columns: {list(result_df.columns)}")
             processed_batches.sort(key=lambda x: x[0])  # Sort by start_idx
+            logger.info(f"🔧 Batch start indices: {[x[0] for x in processed_batches]}")
 
-            for start_idx, batch_result in processed_batches:
+            for batch_idx, (start_idx, batch_result) in enumerate(processed_batches):
                 end_idx = start_idx + len(batch_result)
-                result_df.iloc[start_idx:end_idx] = batch_result
+                logger.info(f"🔧 Processing batch {batch_idx + 1}/{len(processed_batches)}: start_idx={start_idx}, end_idx={end_idx}")
+                logger.info(f"🔧 batch_result type: {type(batch_result)}, shape: {getattr(batch_result, 'shape', 'N/A')}")
+                if hasattr(batch_result, 'columns'):
+                    logger.info(f"🔧 batch_result columns: {list(batch_result.columns)}")
+                if hasattr(batch_result, 'dtypes'):
+                    logger.info(f"🔧 batch_result dtypes: {dict(batch_result.dtypes)}")
+                
+                try:
+                    # Validate indices before assignment
+                    if end_idx > len(result_df):
+                        logger.error(f"❌ Index out of bounds: end_idx={end_idx} > result_df length={len(result_df)}")
+                        logger.error(f"❌ This indicates a batch processing error!")
+                        raise IndexError(f"Batch result end index {end_idx} exceeds result DataFrame length {len(result_df)}")
+                    
+                    if hasattr(batch_result, 'shape') and batch_result.shape[1] != result_df.shape[1]:
+                        logger.error(f"❌ Column count mismatch: batch_result={batch_result.shape[1]} vs result_df={result_df.shape[1]}")
+                        logger.error(f"❌ batch_result columns: {list(batch_result.columns) if hasattr(batch_result, 'columns') else 'N/A'}")
+                        logger.error(f"❌ result_df columns: {list(result_df.columns)}")
+                        raise ValueError(f"Column count mismatch in batch reassembly")
+                    
+                    logger.info(f"🔧 Assigning batch result to result_df[{start_idx}:{end_idx}]...")
+                    result_df.iloc[start_idx:end_idx] = batch_result
+                    logger.info(f"✅ Batch {batch_idx + 1} reassembly successful")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error during batch {batch_idx + 1} reassembly: {e}")
+                    logger.error(f"❌ start_idx={start_idx}, end_idx={end_idx}, result_df.shape={result_df.shape}")
+                    logger.error(f"❌ batch_result details: type={type(batch_result)}, shape={getattr(batch_result, 'shape', 'N/A')}")
+                    raise
+            
+            logger.info(f"✅ All batches reassembled successfully. Final result_df shape: {result_df.shape}")
 
             total_time = time.time() - start_time
             batch_total_time = time.time() - batch_start_time
