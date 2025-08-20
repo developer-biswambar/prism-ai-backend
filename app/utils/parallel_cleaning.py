@@ -5,13 +5,14 @@ Optimized for files with millions of rows and hundreds of columns
 """
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
 
 from app.utils.threading_config import get_cleaning_config
+from app.utils.global_thread_pool import get_data_processing_executor, PoolType, get_global_thread_pool
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ class ParallelDataCleaner:
 
         empty_columns = []
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with get_data_processing_executor() as executor:
             future_to_col = {executor.submit(check_column_empty, col): col for col in df.columns}
 
             for future in as_completed(future_to_col):
@@ -227,7 +228,7 @@ class ParallelDataCleaner:
         original_columns = list(df.columns)
 
         # Parallel cleaning
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with get_data_processing_executor() as executor:
             cleaned_columns = list(executor.map(clean_single_column_name, enumerate(original_columns)))
 
         # Handle duplicates sequentially (fast operation)
@@ -297,7 +298,7 @@ class ParallelDataCleaner:
                 tasks.append((col, start, end))
 
             # Process chunks in parallel
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            with get_data_processing_executor() as executor:
                 results = list(executor.map(clean_column_chunk, tasks))
                 total_cleaned += sum(results)
 
@@ -375,7 +376,7 @@ class ParallelDataCleaner:
 
         # Process columns in parallel
         converted_columns = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with get_data_processing_executor() as executor:
             results = list(executor.map(check_and_convert_column, column_info))
             converted_columns = [col for col in results if col is not None]
 

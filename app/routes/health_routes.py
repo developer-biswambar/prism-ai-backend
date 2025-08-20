@@ -4,8 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
-from app.services.llm_service import get_llm_service
-from app.services.storage_service import uploaded_files, extractions
+from app.utils.global_thread_pool import get_global_thread_pool
 
 # Get configuration from environment
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "20"))
@@ -18,50 +17,51 @@ router = APIRouter()
 
 # API Endpoints
 @router.get("/actuator/health")
-async def health_check():
-    # Get LLM service status
-    llm_service = get_llm_service()
-    llm_available = llm_service.is_available()
-    llm_provider = llm_service.get_provider_name()
-
+def health_check():
+    """Simple, fast health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "2.0.0",
-        "llm_configured": llm_available,
-        "llm_provider": llm_provider,
-        "multi_column_support": True,
-        "batch_processing_enabled": True,
-        "current_batch_size": BATCH_SIZE,
-        "uploaded_files_count": len(uploaded_files),
-        "extractions_count": len(extractions)
+        "service": "financial-data-processing",
+        "uptime": "running"
     }
 
 
 @router.get("/config")
-async def get_config():
-    # Get LLM service configuration
-    llm_service = get_llm_service()
-    llm_available = llm_service.is_available()
-    llm_provider = llm_service.get_provider_name()
-
-    config_data = {
-        "llm_configured": llm_available,
-        "llm_provider": llm_provider,
-        "batch_size": BATCH_SIZE,
-        "multi_column_support": True,
-    }
-
-    # Add provider-specific information
-    if llm_provider == "OpenAI":
-        config_data["api_key_set"] = llm_available
-        # Don't expose API key details for security
-        config_data["api_key_preview"] = "sk-****" if llm_available else "Not set"
-    elif llm_provider == "JPMC LLM":
-        config_data["internal_service"] = True
-        config_data["service_available"] = llm_available
-
+def get_config():
+    """Get basic configuration information"""
     return {
         "success": True,
-        "data": config_data
+        "data": {
+            "batch_size": BATCH_SIZE,
+            "multi_column_support": True,
+            "service": "financial-data-processing",
+            "version": "2.0.0"
+        }
+    }
+
+
+@router.get("/thread-pools/status")
+def get_thread_pool_status():
+    """Get detailed thread pool status and statistics"""
+    thread_pool_manager = get_global_thread_pool()
+    pool_health = thread_pool_manager.get_health_status()
+    
+    return {
+        "success": True,
+        "data": {
+            "global_status": pool_health["status"],
+            "summary": {
+                "total_pools_created": pool_health["total_pools_created"],
+                "total_tasks_submitted": pool_health["total_tasks_submitted"],
+                "total_tasks_completed": pool_health["total_tasks_completed"],
+                "active_tasks": pool_health["active_tasks"]
+            },
+            "pools": pool_health["pools"],
+            "recommendations": {
+                "status": "healthy" if pool_health["active_tasks"] < 50 else "consider_scaling",
+                "message": "Thread pools operating normally" if pool_health["active_tasks"] < 50 else "High task load detected"
+            }
+        }
     }

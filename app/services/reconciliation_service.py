@@ -2,10 +2,12 @@ import io
 import re
 import logging
 import time
+import os
 from datetime import datetime
 from functools import lru_cache
 from typing import Dict, List, Optional, Set, Tuple
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from app.utils.global_thread_pool import get_reconciliation_executor, PoolType, get_global_thread_pool
 from multiprocessing import cpu_count
 import threading
 
@@ -829,7 +831,7 @@ class OptimizedFileProcessor:
         base_timeout = 300  # 5 minutes base timeout
         timeout = get_timeout_for_operation(base_timeout, self.threading_config)
 
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        with get_reconciliation_executor() as executor:
             future_to_batch = {executor.submit(self._process_batch_parallel, task): task['batch_idx']
                                for task in batch_tasks}
 

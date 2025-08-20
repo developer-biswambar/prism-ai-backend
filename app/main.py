@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app with comprehensive OpenAPI documentation
 app = FastAPI(
+    lifespan=lifespan,
     title="Financial Data Transformation Platform (FTT-ML) API",
     version="4.1.0",
     description="""
@@ -167,12 +168,24 @@ async def lifespan(app: FastAPI):
     logger.info("Optimized for large datasets (50k-100k records)")
     logger.info("AI Regex Generation: ✅ Enabled")
 
+    # Initialize global thread pool
+    from app.utils.global_thread_pool import get_global_thread_pool
+    thread_pool_manager = get_global_thread_pool()
+    logger.info("Global thread pool manager initialized")
+
     # Ensure temp directory exists
     os.makedirs(temp_dir, exist_ok=True)
 
     yield
+    
     # Shutdown
     logger.info("Shutting down Optimized File Processing API")
+    
+    # Gracefully shutdown thread pools
+    from app.utils.global_thread_pool import shutdown_global_pools
+    logger.info("Shutting down global thread pools...")
+    shutdown_global_pools(wait=True, timeout=30.0)
+    logger.info("Global thread pools shutdown completed")
 
 
 # Custom exception handler for large file processing

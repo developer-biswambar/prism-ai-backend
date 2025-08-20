@@ -87,7 +87,7 @@ class JSONReconciliationRequest(BaseModel):
     closest_match_config: Optional[ClosestMatchConfig] = None  # Comprehensive closest match configuration
 
 
-async def get_file_by_id(file_id: str) -> UploadFile:
+def get_file_by_id(file_id: str) -> UploadFile:
     """
     Retrieve file by ID from your file storage service
     Uses the existing uploaded_files storage from storage_service
@@ -138,7 +138,7 @@ async def get_file_by_id(file_id: str) -> UploadFile:
                     return 'application/vnd.ms-excel'
                 return 'application/octet-stream'
 
-            async def read(self):
+            def read(self):
                 return self.file.read()
 
             def seek(self, position: int):
@@ -152,7 +152,7 @@ async def get_file_by_id(file_id: str) -> UploadFile:
 
 
 @router.post("/process/", response_model=ReconciliationResponse)
-async def process_reconciliation_json(
+def process_reconciliation_json(
         request: JSONReconciliationRequest
 ):
     """Process file reconciliation with JSON input - File ID Version"""
@@ -174,8 +174,8 @@ async def process_reconciliation_json(
 
         # Retrieve files by ID
         try:
-            fileA = await get_file_by_id(file_0.file_id)
-            fileB = await get_file_by_id(file_1.file_id)
+            fileA = get_file_by_id(file_0.file_id)
+            fileB = get_file_by_id(file_1.file_id)
         except NotImplementedError:
             raise HTTPException(status_code=501,
                                 detail="File retrieval service not implemented. Please implement get_file_by_id function.")
@@ -195,7 +195,7 @@ async def process_reconciliation_json(
         columns_a = request.reconciliation_config.selected_columns_file_a
         columns_b = request.reconciliation_config.selected_columns_file_b
 
-        return await _process_reconciliation_core(
+        return _process_reconciliation_core(
             processor, rules_config, fileA, fileB, columns_a, columns_b, "standard", start_time,
             closest_match_config=request.closest_match_config
         )
@@ -207,7 +207,7 @@ async def process_reconciliation_json(
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
 
-async def _process_reconciliation_core(
+def _process_reconciliation_core(
         processor: OptimizedFileProcessor,
         rules_config: OptimizedRulesConfig,
         fileA: UploadFile,
@@ -323,62 +323,14 @@ async def _process_reconciliation_core(
 
     print(f"Reconciliation completed in {processing_time:.2f}s - {matched} matches found")
 
-    # Only save results if there's data to save
-    from app.routes.save_results_routes import SaveResultsRequest
-    from app.routes.save_results_routes import save_results_to_server
-
-    # Check if we have meaningful data to save
+    # Results are stored in optimized_reconciliation_storage for retrieval
+    # Individual file saving is optional and can be done via the save_results endpoint separately
     has_matched = len(reconciliation_results['matched']) > 0
-
-    # Only save results if we have matches - no point saving when everything is unmatched
     if has_matched:
-        # Save "all" results (matched + unmatched) when we have matches
-        # Save "matched" results 
-        try:
-            save_request_matched = SaveResultsRequest(
-                result_id=recon_id,
-                file_id=recon_id + "_matched",
-                result_type="matched",
-                process_type="reconciliation",
-                file_format="csv",
-                description="Matched records from reconciliation"
-            )
-            save_result_res_matched = await save_results_to_server(save_request_matched)
-            print(f"✓ Saved matched results: {save_result_res_matched}")
-        except Exception as e:
-            print(f"⚠️ Could not save matched results: {str(e)}")
-            # Continue execution - saving is optional
-        try:
-            save_request_unmatched_a = SaveResultsRequest(
-                result_id=recon_id,
-                file_id=recon_id + "_unmatched_a",
-                result_type="unmatched_a",
-                process_type="reconciliation",
-                file_format="csv",
-                description="unmatched_a records from reconciliation"
-            )
-            save_result_res_unmatched_a = await save_results_to_server(save_request_unmatched_a)
-            print(f"✓ Saved matched results: {save_result_res_unmatched_a}")
-        except Exception as e:
-            print(f"⚠️ Could not save unmatched_a results: {str(e)}")
-            # Continue execution - saving is optional
-        try:
-            save_request_unmatched_b = SaveResultsRequest(
-                result_id=recon_id,
-                file_id=recon_id + '_unmatched_b',
-                result_type="unmatched_b",
-                process_type="reconciliation",
-                file_format="csv",
-                description="unmatched_b records from reconciliation"
-            )
-            save_result_res_unmatched_b = await save_results_to_server(save_request_unmatched_b)
-            print(f"✓ Saved matched results: {save_result_res_unmatched_b}")
-        except Exception as e:
-            print(f"⚠️ Could not save matched results: {str(e)}")
-            # Continue execution - saving is optional
+        print(f"✓ Results stored in reconciliation storage for ID: {recon_id}")
+        print("  Use the download endpoint to get results in various formats")
     else:
-        print(
-            "ℹ️ No matches found - not saving any results files. Use 'View Unmatched Records' to see why records didn't match.")
+        print("ℹ️ No matches found - results stored for analysis. Use 'View Unmatched Records' to see why records didn't match.")
 
     return ReconciliationResponse(
         success=True,
@@ -390,7 +342,7 @@ async def _process_reconciliation_core(
 
 
 @router.get("/results/{reconciliation_id}")
-async def get_reconciliation_results_optimized(
+def get_reconciliation_results_optimized(
         reconciliation_id: str,
         result_type: Optional[str] = "all",  # all, matched, unmatched_a, unmatched_b
         page: Optional[int] = 1,
@@ -441,7 +393,7 @@ async def get_reconciliation_results_optimized(
 
 
 @router.get("/download/{reconciliation_id}")
-async def download_reconciliation_results_optimized(
+def download_reconciliation_results_optimized(
         reconciliation_id: str,
         format: str = "csv",
         result_type: str = "all",  # all, matched, unmatched_a, unmatched_b
@@ -539,7 +491,7 @@ async def download_reconciliation_results_optimized(
 
 
 @router.get("/results/{reconciliation_id}/summary")
-async def get_reconciliation_summary(reconciliation_id: str):
+def get_reconciliation_summary(reconciliation_id: str):
     """Get a quick summary of reconciliation results"""
 
     results = optimized_reconciliation_storage.get_results(reconciliation_id)
@@ -571,7 +523,7 @@ async def get_reconciliation_summary(reconciliation_id: str):
 
 
 @router.delete("/results/{reconciliation_id}")
-async def delete_reconciliation_results(reconciliation_id: str):
+def delete_reconciliation_results(reconciliation_id: str):
     """Delete reconciliation results to free up storage"""
 
     results = optimized_reconciliation_storage.get_results(reconciliation_id)
@@ -587,7 +539,7 @@ async def delete_reconciliation_results(reconciliation_id: str):
 
 
 @router.post("/generate-config/")
-async def generate_reconciliation_config(request: dict):
+def generate_reconciliation_config(request: dict):
     """Generate reconciliation configuration using AI based on user requirements"""
 
     try:
@@ -773,45 +725,3 @@ Examples of good matching:
         logger.error(f"Error generating AI reconciliation configuration: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Configuration generation error: {str(e)}")
 
-
-@router.get("/health")
-async def reconciliation_health_check():
-    """Health check for reconciliation service"""
-
-    # Check LLM service status
-    try:
-        from app.services.llm_service import get_llm_service
-        llm_service = get_llm_service()
-        llm_status = {
-            "provider": llm_service.get_provider_name(),
-            "model": llm_service.get_model_name(),
-            "available": llm_service.is_available()
-        }
-    except Exception as e:
-        llm_status = {
-            "provider": "unknown",
-            "model": "unknown",
-            "available": False,
-            "error": str(e)
-        }
-
-    storage_count = len(optimized_reconciliation_storage.storage)
-
-    return {
-        "status": "healthy",
-        "service": "optimized_reconciliation",
-        "llm_service": llm_status,
-        "active_reconciliations": storage_count,
-        "memory_usage": "optimized",
-        "features": [
-            "hash_based_matching",
-            "vectorized_extraction",
-            "column_selection",
-            "paginated_results",
-            "streaming_downloads",
-            "batch_processing",
-            "json_input_support",
-            "file_id_retrieval",
-            "ai_configuration_generation"
-        ]
-    }

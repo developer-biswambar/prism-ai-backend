@@ -6,13 +6,14 @@ Thread-safe implementation with parallel column processing
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from datetime import datetime
 from typing import List, Tuple, Optional
 
 import pandas as pd
 
 from app.utils.threading_config import get_date_processing_config
+from app.utils.global_thread_pool import get_date_processing_executor, PoolType, get_global_thread_pool
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class ParallelDateNormalizer:
         logger.info(f"🔍 Detecting date columns in parallel across {len(df.columns)} columns...")
         date_columns = []
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with get_date_processing_executor() as executor:
             future_to_col = {executor.submit(check_column_for_dates, col): col for col in df.columns}
 
             for future in as_completed(future_to_col):
@@ -200,7 +201,7 @@ class ParallelDateNormalizer:
                     tasks.append((col_name, start, end))
 
                 # Process chunks in parallel
-                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                with get_date_processing_executor() as executor:
                     # We need to pass df as a module-level variable or use a different approach
                     # For now, let's use vectorized approach for better performance
 
