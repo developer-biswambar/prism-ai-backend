@@ -572,18 +572,18 @@ async def get_reconciliation_summary(reconciliation_id: str):
 
 @router.delete("/results/{reconciliation_id}")
 async def delete_reconciliation_results(reconciliation_id: str):
-    """Delete reconciliation results to free up memory"""
+    """Delete reconciliation results to free up storage"""
 
     results = optimized_reconciliation_storage.get_results(reconciliation_id)
     if not results:
         raise HTTPException(status_code=404, detail="Reconciliation ID not found")
 
-    # Remove from storage
-    if reconciliation_id in optimized_reconciliation_storage.storage:
-        del optimized_reconciliation_storage.storage[reconciliation_id]
+    # Remove from centralized storage (works for both local and S3)
+    success = optimized_reconciliation_storage.delete_results(reconciliation_id)
+    if success:
         return {"success": True, "message": f"Reconciliation results {reconciliation_id} deleted successfully"}
     else:
-        raise HTTPException(status_code=404, detail="Reconciliation ID not found in storage")
+        raise HTTPException(status_code=500, detail="Failed to delete reconciliation results")
 
 
 @router.post("/generate-config/")

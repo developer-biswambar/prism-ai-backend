@@ -1993,14 +1993,35 @@ class OptimizedFileProcessor:
         return df[existing_columns] if existing_columns else df
 
 
-# Create optimized storage for results with compression
+# Create optimized storage for results using centralized storage service
 class OptimizedReconciliationStorage:
     def __init__(self):
-        self.storage = {}
+        # Use centralized storage service (supports both local and S3)
+        from app.services.storage_service import reconciliations
+        self.storage_backend = reconciliations
+        logger.info(f"ReconciliationStorage: Initialized with {self.storage_backend.backend.__class__.__name__} backend")
+
+    @property 
+    def storage(self):
+        """Backward compatibility property for len() operations"""
+        class StorageDict:
+            def __init__(self, backend):
+                self.backend = backend
+            
+            def __len__(self):
+                try:
+                    return len(self.backend.keys())
+                except Exception as e:
+                    logger.warning(f"ReconciliationStorage: Failed to get storage count: {e}")
+                    return 0
+                    
+        return StorageDict(self.storage_backend)
 
     def store_results(self, recon_id: str, results: Dict[str, pd.DataFrame]) -> bool:
-        """Store results with optimized format"""
+        """Store results with optimized format using centralized storage"""
         try:
+            logger.debug(f"ReconciliationStorage: Storing results for {recon_id}")
+            
             # Convert to optimized format for storage
             optimized_results = {
                 'matched': results['matched'].to_dict('records'),
@@ -2014,15 +2035,52 @@ class OptimizedReconciliationStorage:
                 }
             }
 
-            self.storage[recon_id] = optimized_results
-            return True
+            # Use centralized storage (local or S3 based on configuration)
+            success = self.storage_backend.set(recon_id, optimized_results)
+            if success:
+                logger.debug(f"ReconciliationStorage: Successfully stored results for {recon_id}")
+            else:
+                logger.error(f"ReconciliationStorage: Failed to store results for {recon_id}")
+            
+            return success
+            
         except Exception as e:
-            print(f"Error storing results: {e}")
+            logger.error(f"ReconciliationStorage: Error storing results for {recon_id}: {e}")
             return False
 
     def get_results(self, recon_id: str) -> Optional[Dict]:
-        """Get stored results"""
-        return self.storage.get(recon_id)
+        """Get stored results from centralized storage"""
+        try:
+            logger.debug(f"ReconciliationStorage: Retrieving results for {recon_id}")
+            
+            result = self.storage_backend.get(recon_id)
+            if result:
+                logger.debug(f"ReconciliationStorage: Successfully retrieved results for {recon_id}")
+            else:
+                logger.debug(f"ReconciliationStorage: No results found for {recon_id}")
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"ReconciliationStorage: Error retrieving results for {recon_id}: {e}")
+            return None
+
+    def delete_results(self, recon_id: str) -> bool:
+        """Delete stored results from centralized storage"""
+        try:
+            logger.debug(f"ReconciliationStorage: Deleting results for {recon_id}")
+            
+            success = self.storage_backend.delete(recon_id)
+            if success:
+                logger.debug(f"ReconciliationStorage: Successfully deleted results for {recon_id}")
+            else:
+                logger.debug(f"ReconciliationStorage: Results for {recon_id} not found for deletion")
+                
+            return success
+            
+        except Exception as e:
+            logger.error(f"ReconciliationStorage: Error deleting results for {recon_id}: {e}")
+            return False
 
 
 # Global instances
