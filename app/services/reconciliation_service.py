@@ -637,25 +637,37 @@ class OptimizedFileProcessor:
                 if match_type == "equals":
                     # Case insensitive string comparison for equals
                     if isinstance(value, str):
-                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower() == str(value).lower()]
+                        mask = filtered_df[column].astype(str).str.lower() == str(value).lower()
+                        # Handle NaN values explicitly
+                        filtered_df = filtered_df[mask.fillna(False)]
                     else:
-                        filtered_df = filtered_df[filtered_df[column] == value]
+                        mask = filtered_df[column] == value
+                        # Handle NaN values explicitly  
+                        filtered_df = filtered_df[mask.fillna(False)]
                 elif match_type == "not_equals":
                     # Case insensitive string comparison for not_equals
                     if isinstance(value, str):
-                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower() != str(value).lower()]
+                        mask = filtered_df[column].astype(str).str.lower() != str(value).lower()
+                        # Handle NaN values explicitly
+                        filtered_df = filtered_df[mask.fillna(True)]
                     else:
-                        filtered_df = filtered_df[filtered_df[column] != value]
+                        mask = filtered_df[column] != value
+                        # Handle NaN values explicitly
+                        filtered_df = filtered_df[mask.fillna(True)]
                 elif match_type == "greater_than":
                     numeric_col = pd.to_numeric(filtered_df[column], errors='coerce')
-                    filtered_df = filtered_df[numeric_col > value]
+                    mask = numeric_col > value
+                    # Handle NaN values explicitly
+                    filtered_df = filtered_df[mask.fillna(False)]
                 elif match_type == "less_than":
                     numeric_col = pd.to_numeric(filtered_df[column], errors='coerce')
-                    filtered_df = filtered_df[numeric_col < value]
+                    mask = numeric_col < value
+                    # Handle NaN values explicitly  
+                    filtered_df = filtered_df[mask.fillna(False)]
                 elif match_type == "contains":
-                    # Case insensitive contains
-                    filtered_df = filtered_df[
-                        filtered_df[column].astype(str).str.contains(str(value), case=False, na=False)]
+                    # Case insensitive contains (na=False already handles NaN)
+                    mask = filtered_df[column].astype(str).str.contains(str(value), case=False, na=False)
+                    filtered_df = filtered_df[mask]
                 elif match_type == "in":
                     if isinstance(value, str):
                         value = [v.strip() for v in value.split(',')]
@@ -663,9 +675,13 @@ class OptimizedFileProcessor:
                     if all(isinstance(v, str) for v in value):
                         # Convert both column values and filter values to lowercase for comparison
                         value_lower = [str(v).lower() for v in value]
-                        filtered_df = filtered_df[filtered_df[column].astype(str).str.lower().isin(value_lower)]
+                        mask = filtered_df[column].astype(str).str.lower().isin(value_lower)
+                        # Handle NaN values explicitly
+                        filtered_df = filtered_df[mask.fillna(False)]
                     else:
-                        filtered_df = filtered_df[filtered_df[column].isin(value)]
+                        mask = filtered_df[column].isin(value)
+                        # Handle NaN values explicitly
+                        filtered_df = filtered_df[mask.fillna(False)]
                 else:
                     self.warnings.append(f"Unknown filter match type: {match_type}")
             except Exception as e:
