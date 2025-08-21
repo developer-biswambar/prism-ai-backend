@@ -1,606 +1,441 @@
-# storage.py - Enhanced Storage Module with S3 Integration
+# storage_service.py - Simplified S3-Only Storage Service
 
 """
-Enhanced storage module supporting both local and S3 storage backends.
-Provides centralized storage that can be imported by other modules with seamless switching.
+Simplified S3-only storage service with true metadata-only access support.
+Provides clean interface: get, save, delete, list, find methods.
 """
 
 import logging
 import os
 import pickle
-from abc import ABC, abstractmethod
+import gzip
+import json
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-# Optional S3 imports - graceful fallback if boto3 not available
+# S3 imports - required for this service
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
-
     S3_AVAILABLE = True
 except ImportError:
     S3_AVAILABLE = False
+    raise ImportError("boto3 is required for storage service. Install with: pip install boto3")
 
 logger = logging.getLogger(__name__)
 
 
-class StorageBackend(ABC):
-    """Abstract base class for storage backends"""
-
-    @abstractmethod
-    def get(self, key: str) -> Optional[Any]:
-        pass
-
-    @abstractmethod
-    def set(self, key: str, value: Any) -> bool:
-        pass
-
-    @abstractmethod
-    def delete(self, key: str) -> bool:
-        pass
-
-    @abstractmethod
-    def list_keys(self, prefix: str = "") -> List[str]:
-        pass
-
-    @abstractmethod
-    def exists(self, key: str) -> bool:
-        pass
-
-
-class LocalStorageBackend(StorageBackend):
-    """Local dictionary-based storage backend"""
-
-    def __init__(self):
-        self.storage: Dict[str, Any] = {}
-        logger.info("LocalStorage initialized: Using in-memory dictionary storage")
-
-    def get(self, key: str) -> Optional[Any]:
-        logger.info(f"LocalStorage RETRIEVE: {key}")
-        result = self.storage.get(key)
-        if result:
-            logger.info(f"LocalStorage RETRIEVE SUCCESS: {key}")
-        else:
-            logger.info(f"LocalStorage RETRIEVE NOT_FOUND: {key}")
-        return result
-
-    def set(self, key: str, value: Any) -> bool:
-        import time
-        import sys
-        
-        start_time = time.time()
-        try:
-            # Calculate data size for logging
-            if hasattr(value, '__sizeof__'):
-                data_size = sys.getsizeof(value)
-            else:
-                data_size = len(str(value)) if value else 0
-                
-            logger.info(f"LocalStorage UPLOAD: {key} (estimated size: {data_size} bytes)")
-            
-            # For very large objects, log progress
-            if data_size > 50 * 1024 * 1024:  # 50MB
-                logger.info(f"LocalStorage UPLOAD: {key} - large object detected, storing in memory...")
-            
-            self.storage[key] = value
-            
-            elapsed = time.time() - start_time
-            throughput_mbps = (data_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-            
-            logger.info(f"LocalStorage UPLOAD SUCCESS: {key} stored in {elapsed:.3f}s ({throughput_mbps:.2f} MB/s)")
-            return True
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"LocalStorage UPLOAD FAILED: {key} after {elapsed:.3f}s - {e}")
-            return False
-
-    def delete(self, key: str) -> bool:
-        try:
-            if key in self.storage:
-                del self.storage[key]
-                logger.debug(f"LocalStorage DELETE: {key}")
-                return True
-            logger.debug(f"LocalStorage DELETE: {key} not found")
-            return False
-        except Exception as e:
-            logger.error(f"LocalStorage DELETE failed for key {key}: {e}")
-            return False
-
-    def list_keys(self, prefix: str = "") -> List[str]:
-        if not prefix:
-            keys = list(self.storage.keys())
-            logger.debug(f"LocalStorage LIST_KEYS: returning {len(keys)} keys")
-            return keys
-        keys = [key for key in self.storage.keys() if key.startswith(prefix)]
-        logger.debug(f"LocalStorage LIST_KEYS: prefix '{prefix}' returned {len(keys)} keys")
-        return keys
-
-    def exists(self, key: str) -> bool:
-        exists = key in self.storage
-        logger.debug(f"LocalStorage EXISTS: {key} -> {exists}")
-        return exists
-
-    def items(self):
-        """For backward compatibility with dict-like access"""
-        return self.storage.items()
-
-    def keys(self):
-        """For backward compatibility with dict-like access"""
-        return self.storage.keys()
-
-    def values(self):
-        """For backward compatibility with dict-like access"""
-        return self.storage.values()
-
-
-class S3StorageBackend(StorageBackend):
-    """S3-based storage backend"""
-
+class S3StorageService:
+    """Simple S3 storage service with metadata-only access optimization"""
+    
     def __init__(self, bucket_name: str, prefix: str = "", region: str = None):
         if not S3_AVAILABLE:
-            logger.error("S3Storage initialization failed: boto3 not available")
             raise ImportError("boto3 is required for S3 storage. Install with: pip install boto3")
-
+            
         self.bucket_name = bucket_name
         self.prefix = prefix.rstrip('/') + '/' if prefix else ""
         self.region = region
-
+        
         logger.info(f"S3Storage initializing: bucket={bucket_name}, prefix={self.prefix}, region={region}")
-
-        # Initialize S3 client - will use IAM role credentials automatically
+        
+        # Initialize S3 client
         try:
-            import time
-            start_time = time.time()
-            
             if region:
                 self.s3_client = boto3.client('s3', region_name=region)
-                logger.debug(f"S3 client created with region: {region}")
             else:
                 self.s3_client = boto3.client('s3')
-                logger.debug("S3 client created with default region")
-
-            # Test connection and bucket access
+                
+            # Test connection
             self._test_connection()
+            logger.info(f"S3Storage initialized successfully")
             
-            init_time = time.time() - start_time
-            logger.info(f"S3Storage initialized successfully in {init_time:.3f}s: bucket={bucket_name}, prefix={self.prefix}")
-
         except NoCredentialsError:
-            logger.error("S3Storage initialization failed: AWS credentials not found")
             raise RuntimeError("AWS credentials not found. Ensure IAM role is properly configured.")
         except Exception as e:
-            logger.error(f"S3Storage initialization failed: {e}")
             raise RuntimeError(f"Failed to initialize S3 client: {e}")
-
+    
     def _test_connection(self):
         """Test S3 connection and bucket access"""
         try:
-            logger.debug(f"S3Storage testing connection to bucket: {self.bucket_name}")
             self.s3_client.head_bucket(Bucket=self.bucket_name)
-            logger.debug(f"S3Storage connection test successful for bucket: {self.bucket_name}")
         except ClientError as e:
             error_code = e.response['Error']['Code']
             if error_code == '404':
-                logger.error(f"S3Storage connection test failed: Bucket '{self.bucket_name}' not found")
                 raise RuntimeError(f"S3 bucket '{self.bucket_name}' not found")
             elif error_code == '403':
-                logger.error(f"S3Storage connection test failed: Access denied to bucket '{self.bucket_name}'")
                 raise RuntimeError(f"Access denied to S3 bucket '{self.bucket_name}'")
             else:
-                logger.error(f"S3Storage connection test failed: {e}")
                 raise RuntimeError(f"S3 bucket access error: {e}")
-
+    
     def _get_s3_key(self, key: str) -> str:
         """Convert storage key to S3 object key"""
         return f"{self.prefix}{key}.pkl"
-
-    def get(self, key: str) -> Optional[Any]:
-        import time
-        import pickle
-        import gzip
-        start_time = time.time()
-        
-        try:
-            s3_key = self._get_s3_key(key)
-            logger.info(f"S3Storage RETRIEVE: {key} from bucket {self.bucket_name}")
-            
-            download_start = time.time()
-            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
-            raw_data = response['Body'].read()
-            download_time = time.time() - download_start
-            
-            # Check metadata to determine if file is compressed
-            metadata = response.get('Metadata', {})
-            is_compressed = metadata.get('compressed', 'False').lower() == 'true'
-            original_size = metadata.get('original_size', 'unknown')
-            
-            logger.debug(f"S3Storage RETRIEVE: {key} downloaded {len(raw_data)} bytes in {download_time:.3f}s")
-            
-            # Decompress if needed
-            if is_compressed:
-                decompression_start = time.time()
-                try:
-                    decompressed_data = gzip.decompress(raw_data)
-                    decompression_time = time.time() - decompression_start
-                    
-                    logger.debug(f"S3Storage RETRIEVE: {key} decompressed {len(raw_data)} -> {len(decompressed_data)} bytes in {decompression_time:.3f}s")
-                    serialized_data = decompressed_data
-                except Exception as e:
-                    logger.error(f"S3Storage RETRIEVE: {key} decompression failed - {e}")
-                    return None
-            else:
-                serialized_data = raw_data
-            
-            # Deserialize the data
-            deserialization_start = time.time()
-            data = pickle.loads(serialized_data)
-            deserialization_time = time.time() - deserialization_start
-            
-            elapsed = time.time() - start_time
-            
-            # Calculate throughput
-            throughput_mbps = (len(raw_data) / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-            
-            logger.info(f"S3Storage RETRIEVE SUCCESS: {key} in {elapsed:.3f}s ({len(raw_data)} bytes, {throughput_mbps:.2f} MB/s, download: {download_time:.3f}s, deserialize: {deserialization_time:.3f}s)")
-            
-            return data
-            
-        except ClientError as e:
-            elapsed = time.time() - start_time
-            if e.response['Error']['Code'] == 'NoSuchKey':
-                logger.info(f"S3Storage RETRIEVE NOT_FOUND: {key} in {elapsed:.3f}s")
-                return None
-            logger.error(f"S3Storage RETRIEVE FAILED: {key} in {elapsed:.3f}s - {e}")
-            return None
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"S3Storage RETRIEVE ERROR: {key} failed in {elapsed:.3f}s - {e}")
-            return None
-
-    def set(self, key: str, value: Any) -> bool:
-        import time
-        import pickle
-        import gzip
-        start_time = time.time()
-        
-        try:
-            s3_key = self._get_s3_key(key)
-            
-            # Optimize serialization and compression for large files
-            logger.debug(f"S3Storage UPLOAD: Serializing {key}")
-            serialization_start = time.time()
-            
-            # Use highest pickle protocol for better performance
-            raw_data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-            serialization_time = time.time() - serialization_start
-            
-            # Compress large files (>1MB) for faster upload and storage savings
-            raw_size = len(raw_data)
-            use_compression = raw_size > 1024 * 1024  # 1MB threshold
-            
-            if use_compression:
-                compression_start = time.time()
-                # Use fastest compression level (1) for speed vs moderate compression
-                serialized_data = gzip.compress(raw_data, compresslevel=1)
-                compression_time = time.time() - compression_start
-                compression_ratio = len(serialized_data) / raw_size
-                
-                logger.debug(f"S3Storage UPLOAD: {key} compressed {raw_size} -> {len(serialized_data)} bytes ({compression_ratio:.2%}) in {compression_time:.3f}s")
-            else:
-                serialized_data = raw_data
-                compression_time = 0
-            
-            data_size = len(serialized_data)
-            logger.info(f"S3Storage UPLOAD: {key} to bucket {self.bucket_name} (size: {data_size} bytes, serialization: {serialization_time:.3f}s)")
-
-            # Use optimized S3 upload configuration for large files
-            upload_start = time.time()
-            
-            extra_args = {
-                'Metadata': {
-                    'created_at': datetime.utcnow().isoformat(),
-                    'storage_type': 'enhanced_storage',
-                    'compressed': str(use_compression),
-                    'original_size': str(raw_size),
-                    'pickle_protocol': str(pickle.HIGHEST_PROTOCOL)
-                }
-            }
-            
-            # For large files (>100MB), use multipart upload configuration
-            if data_size > 100 * 1024 * 1024:  # 100MB
-                extra_args.update({
-                    'StorageClass': 'STANDARD',  # Use standard storage for large files
-                })
-                logger.debug(f"S3Storage UPLOAD: {key} using multipart upload for large file")
-
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=serialized_data,
-                **extra_args
-            )
-            
-            upload_time = time.time() - upload_start
-            elapsed = time.time() - start_time
-            
-            # Calculate throughput
-            throughput_mbps = (data_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-            
-            logger.info(f"S3Storage UPLOAD SUCCESS: {key} uploaded in {elapsed:.3f}s ({data_size} bytes, {throughput_mbps:.2f} MB/s, upload: {upload_time:.3f}s)")
-            
-            return True
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"S3Storage UPLOAD FAILED: {key} failed in {elapsed:.3f}s - {e}")
-            return False
-
-    def delete(self, key: str) -> bool:
-        import time
-        start_time = time.time()
-        try:
-            s3_key = self._get_s3_key(key)
-            logger.debug(f"S3Storage DELETE: {key} -> {s3_key}")
-            
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
-            
-            elapsed = time.time() - start_time
-            logger.debug(f"S3Storage DELETE success: {key} in {elapsed:.3f}s")
-            return True
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"S3Storage DELETE failed: {key} in {elapsed:.3f}s - {e}")
-            return False
-
-    def list_keys(self, prefix: str = "") -> List[str]:
-        import time
-        start_time = time.time()
-        try:
-            search_prefix = f"{self.prefix}{prefix}" if prefix else self.prefix
-            logger.debug(f"S3Storage LIST_KEYS: searching with prefix '{search_prefix}'")
-
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=search_prefix)
-
-            keys = []
-            page_count = 0
-            for page in pages:
-                page_count += 1
-                if 'Contents' in page:
-                    for obj in page['Contents']:
-                        # Convert S3 key back to storage key
-                        s3_key = obj['Key']
-                        if s3_key.startswith(self.prefix) and s3_key.endswith('.pkl'):
-                            storage_key = s3_key[len(self.prefix):-4]  # Remove prefix and .pkl
-                            keys.append(storage_key)
-
-            elapsed = time.time() - start_time
-            logger.debug(f"S3Storage LIST_KEYS success: prefix '{prefix}' returned {len(keys)} keys from {page_count} pages in {elapsed:.3f}s")
-            return keys
-            
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"S3Storage LIST_KEYS failed: prefix '{prefix}' in {elapsed:.3f}s - {e}")
-            return []
-
-    def exists(self, key: str) -> bool:
-        import time
-        start_time = time.time()
-        try:
-            s3_key = self._get_s3_key(key)
-            logger.debug(f"S3Storage EXISTS: {key} -> {s3_key}")
-            
-            self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
-            
-            elapsed = time.time() - start_time
-            logger.debug(f"S3Storage EXISTS: {key} -> True in {elapsed:.3f}s")
-            return True
-            
-        except ClientError as e:
-            elapsed = time.time() - start_time
-            if e.response['Error']['Code'] == '404':
-                logger.debug(f"S3Storage EXISTS: {key} -> False in {elapsed:.3f}s")
-                return False
-            logger.error(f"S3Storage EXISTS failed: {key} in {elapsed:.3f}s - {e}")
-            return False
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(f"S3Storage EXISTS failed: {key} in {elapsed:.3f}s - {e}")
-            return False
-
-    def items(self):
-        """For backward compatibility - WARNING: This loads all data into memory"""
-        logger.warning("items() loads all S3 data into memory. Consider using list_keys() for large datasets.")
-        for key in self.list_keys():
-            value = self.get(key)
-            if value is not None:
-                yield key, value
-
-    def keys(self):
-        """For backward compatibility"""
-        return self.list_keys()
-
-    def values(self):
-        """For backward compatibility - WARNING: This loads all data into memory"""
-        logger.warning("values() loads all S3 data into memory. Consider iterating through keys.")
-        for key in self.list_keys():
-            value = self.get(key)
-            if value is not None:
-                yield value
-
-
-class EnhancedStorage:
-    """Enhanced storage class that provides dict-like interface with pluggable backends"""
-
-    def __init__(self, backend: StorageBackend):
-        self.backend = backend
-
-    def __getitem__(self, key: str):
-        value = self.backend.get(key)
-        if value is None:
-            raise KeyError(key)
-        return value
-
-    def __setitem__(self, key: str, value: Any):
-        success = self.backend.set(key, value)
-        if not success:
-            raise RuntimeError(f"Failed to set key: {key}")
-
-    def __delitem__(self, key: str):
-        success = self.backend.delete(key)
-        if not success:
-            raise KeyError(key)
-
-    def __contains__(self, key: str):
-        return self.backend.exists(key)
-
-    def __len__(self):
-        return len(self.backend.list_keys())
-
-    def get(self, key: str, default=None):
-        value = self.backend.get(key)
-        return value if value is not None else default
-
-    def items(self):
-        return self.backend.items()
-
-    def keys(self):
-        return self.backend.keys()
-
-    def values(self):
-        return self.backend.values()
-
-    def pop(self, key: str, default=None):
-        value = self.get(key, default)
-        if key in self:
-            del self[key]
-        return value
-
-    def clear(self):
-        """Clear all items - use with caution"""
-        for key in list(self.keys()):
-            del self[key]
-
-    def keys_only(self):
-        """Get only the keys without loading values - optimized for listing"""
-        return self.backend.list_keys()
-
-    def get_metadata_only(self, key: str, metadata_path: str = None):
-        """Get only metadata from stored objects without loading full data
+    
+    def _get_metadata_key(self, key: str) -> str:
+        """Get S3 key for metadata-only object"""
+        return f"{self.prefix}{key}.metadata.json"
+    
+    def save(self, key: str, data: Any, metadata: Optional[Dict] = None) -> bool:
+        """Save data with optional metadata for efficient retrieval
         
         Args:
             key: Storage key
-            metadata_path: Dot-separated path to metadata (e.g., 'info' for file_data['info'])
-        
+            data: Data to store
+            metadata: Optional metadata for efficient access (will be stored separately)
+            
         Returns:
-            Metadata object or None if not found
+            bool: Success status
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            # Serialize main data
+            serialized_data = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+            
+            # Compress if large
+            if len(serialized_data) > 1024 * 1024:  # 1MB threshold
+                compressed_data = gzip.compress(serialized_data, compresslevel=1)
+                is_compressed = True
+            else:
+                compressed_data = serialized_data
+                is_compressed = False
+            
+            # Store main data
+            s3_key = self._get_s3_key(key)
+            extra_args = {
+                'Metadata': {
+                    'created_at': datetime.now().isoformat(),
+                    'compressed': str(is_compressed),
+                    'original_size': str(len(serialized_data))
+                }
+            }
+            
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=compressed_data,
+                **extra_args
+            )
+            
+            # Store metadata separately for efficient access
+            if metadata:
+                metadata_key = self._get_metadata_key(key)
+                metadata_with_timestamp = {
+                    **metadata,
+                    '_storage_metadata': {
+                        'created_at': datetime.now().isoformat(),
+                        'data_key': s3_key,
+                        'compressed': is_compressed,
+                        'original_size': len(serialized_data)
+                    }
+                }
+                
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=metadata_key,
+                    Body=json.dumps(metadata_with_timestamp, default=str),
+                    ContentType='application/json'
+                )
+            
+            elapsed = time.time() - start_time
+            logger.info(f"S3Storage SAVE: {key} saved in {elapsed:.3f}s ({len(compressed_data)} bytes)")
+            return True
+            
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"S3Storage SAVE FAILED: {key} in {elapsed:.3f}s - {e}")
+            return False
+    
+    def get(self, key: str) -> Optional[Any]:
+        """Get full data object
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            Stored data or None if not found
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            s3_key = self._get_s3_key(key)
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            raw_data = response['Body'].read()
+            
+            # Check if compressed
+            metadata = response.get('Metadata', {})
+            is_compressed = metadata.get('compressed', 'False').lower() == 'true'
+            
+            if is_compressed:
+                decompressed_data = gzip.decompress(raw_data)
+                data = pickle.loads(decompressed_data)
+            else:
+                data = pickle.loads(raw_data)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"S3Storage GET: {key} retrieved in {elapsed:.3f}s")
+            return data
+            
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.debug(f"S3Storage GET: {key} not found")
+                return None
+            logger.error(f"S3Storage GET FAILED: {key} - {e}")
+            return None
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"S3Storage GET ERROR: {key} in {elapsed:.3f}s - {e}")
+            return None
+    
+    def get_metadata_only(self, key: str) -> Optional[Dict]:
+        """Get only metadata without loading full data - TRUE metadata-only access
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            Metadata dict or None if not found
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            metadata_key = self._get_metadata_key(key)
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=metadata_key)
+            metadata_json = response['Body'].read().decode('utf-8')
+            metadata = json.loads(metadata_json)
+            
+            elapsed = time.time() - start_time
+            logger.debug(f"S3Storage METADATA: {key} retrieved in {elapsed:.3f}s")
+            return metadata
+            
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                logger.debug(f"S3Storage METADATA: {key} metadata not found")
+                return None
+            logger.error(f"S3Storage METADATA FAILED: {key} - {e}")
+            return None
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"S3Storage METADATA ERROR: {key} in {elapsed:.3f}s - {e}")
+            return None
+    
+    def delete(self, key: str) -> bool:
+        """Delete data and its metadata
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            bool: Success status
         """
         try:
-            full_data = self.backend.get(key)
-            if full_data is None:
-                return None
-                
-            if metadata_path:
-                # Navigate to metadata using dot notation
-                result = full_data
-                for path_part in metadata_path.split('.'):
-                    result = result.get(path_part) if isinstance(result, dict) else None
-                    if result is None:
-                        return None
-                return result
-            else:
-                return full_data
-                
+            # Delete main data
+            s3_key = self._get_s3_key(key)
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=s3_key)
+            
+            # Delete metadata if it exists
+            try:
+                metadata_key = self._get_metadata_key(key)
+                self.s3_client.delete_object(Bucket=self.bucket_name, Key=metadata_key)
+            except:
+                pass  # Metadata might not exist
+            
+            logger.debug(f"S3Storage DELETE: {key} deleted")
+            return True
+            
         except Exception as e:
-            logger.error(f"Error getting metadata for {key}: {e}")
-            return None
-
-
-def create_storage_backend() -> StorageBackend:
-    """Factory function to create appropriate storage backend based on configuration"""
-
-    storage_type = os.getenv('STORAGE_TYPE', 'local').lower()
-    logger.info(f"StorageService: Initializing storage backend type: {storage_type}")
-
-    if storage_type == 's3':
-        if not S3_AVAILABLE:
-            logger.error("StorageService: boto3 not available for S3 storage")
-            raise RuntimeError("S3 storage requested but boto3 not installed. Install with: pip install boto3")
-
-        bucket_name = os.getenv('S3_BUCKET_NAME')
-        if not bucket_name:
-            logger.error("StorageService: S3_BUCKET_NAME environment variable is required when STORAGE_TYPE=s3")
-            raise RuntimeError("S3 storage requested but S3_BUCKET_NAME environment variable not set. Please set S3_BUCKET_NAME.")
-
+            logger.error(f"S3Storage DELETE FAILED: {key} - {e}")
+            return False
+    
+    def list(self, prefix: str = "") -> List[str]:
+        """List all storage keys with optional prefix filter
+        
+        Args:
+            prefix: Optional prefix to filter keys
+            
+        Returns:
+            List of storage keys
+        """
         try:
-            s3_prefix = os.getenv('S3_PREFIX', 'financial-data-storage')
-            aws_region = os.getenv('AWS_REGION', os.getenv('AWS_DEFAULT_REGION'))
+            search_prefix = f"{self.prefix}{prefix}" if prefix else self.prefix
             
-            logger.info(f"StorageService: Attempting S3 initialization - bucket: {bucket_name}, prefix: {s3_prefix}, region: {aws_region}")
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=search_prefix)
             
-            return S3StorageBackend(
-                bucket_name=bucket_name,
-                prefix=s3_prefix,
-                region=aws_region
-            )
+            keys = []
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        # Only include main data files, not metadata files
+                        if s3_key.startswith(self.prefix) and s3_key.endswith('.pkl'):
+                            storage_key = s3_key[len(self.prefix):-4]  # Remove prefix and .pkl
+                            keys.append(storage_key)
+            
+            logger.debug(f"S3Storage LIST: found {len(keys)} keys with prefix '{prefix}'")
+            return keys
+            
         except Exception as e:
-            logger.error(f"StorageService: Failed to initialize S3 storage backend: {e}")
-            raise RuntimeError(f"S3 storage initialization failed: {e}. Check AWS credentials, bucket permissions, and network connectivity.")
+            logger.error(f"S3Storage LIST FAILED: prefix '{prefix}' - {e}")
+            return []
+    
+    def find(self, criteria: Dict[str, Any]) -> List[str]:
+        """Find storage keys based on metadata criteria
+        
+        Args:
+            criteria: Dictionary of metadata criteria to match
+            
+        Returns:
+            List of matching storage keys
+        """
+        try:
+            # Get all keys
+            all_keys = self.list()
+            matching_keys = []
+            
+            for key in all_keys:
+                metadata = self.get_metadata_only(key)
+                if metadata:
+                    # Check if metadata matches all criteria
+                    matches = True
+                    for criterion_key, criterion_value in criteria.items():
+                        if metadata.get(criterion_key) != criterion_value:
+                            matches = False
+                            break
+                    
+                    if matches:
+                        matching_keys.append(key)
+            
+            logger.debug(f"S3Storage FIND: found {len(matching_keys)} keys matching criteria")
+            return matching_keys
+            
+        except Exception as e:
+            logger.error(f"S3Storage FIND FAILED: {e}")
+            return []
+    
+    def exists(self, key: str) -> bool:
+        """Check if key exists
+        
+        Args:
+            key: Storage key
+            
+        Returns:
+            bool: True if exists
+        """
+        try:
+            s3_key = self._get_s3_key(key)
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=s3_key)
+            return True
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return False
+            logger.error(f"S3Storage EXISTS FAILED: {key} - {e}")
+            return False
+        except Exception as e:
+            logger.error(f"S3Storage EXISTS ERROR: {key} - {e}")
+            return False
 
-    else:
-        logger.info(f"StorageService: Using local storage backend (STORAGE_TYPE={storage_type})")
-        return LocalStorageBackend()
+
+def create_storage_service() -> S3StorageService:
+    """Factory function to create S3 storage service based on configuration"""
+    
+    bucket_name = os.getenv('S3_BUCKET_NAME')
+    if not bucket_name:
+        raise RuntimeError("S3_BUCKET_NAME environment variable is required. Please set S3_BUCKET_NAME.")
+    
+    s3_prefix = os.getenv('S3_PREFIX', 'prism-ai-storage')
+    aws_region = os.getenv('AWS_REGION', os.getenv('AWS_DEFAULT_REGION'))
+    
+    logger.info(f"Creating S3 storage service - bucket: {bucket_name}, prefix: {s3_prefix}, region: {aws_region}")
+    
+    return S3StorageService(
+        bucket_name=bucket_name,
+        prefix=s3_prefix,
+        region=aws_region
+    )
 
 
-# Initialize storage backends
-logger.info("StorageService: Creating storage backend...")
-_backend = create_storage_backend()
+# Initialize storage services for different data types
+logger.info("Initializing storage services...")
 
-# Create enhanced storage instances with dict-like interface
-logger.info("StorageService: Initializing storage containers...")
-uploaded_files = EnhancedStorage(_backend)
-extractions = EnhancedStorage(_backend)
-comparisons = EnhancedStorage(_backend)
-reconciliations = EnhancedStorage(_backend)
+# Create separate prefixes for different data types for better organization
+_main_storage = create_storage_service()
 
-logger.info(f"StorageService: Successfully initialized {_backend.__class__.__name__} with 4 storage containers")
+# Create logical containers with different prefixes
+class StorageContainer:
+    """Wrapper to provide prefix-based separation"""
+    
+    def __init__(self, storage_service: S3StorageService, container_prefix: str):
+        self.storage = storage_service
+        self.container_prefix = container_prefix
+    
+    def save(self, key: str, data: Any, metadata: Optional[Dict] = None) -> bool:
+        return self.storage.save(f"{self.container_prefix}/{key}", data, metadata)
+    
+    def get(self, key: str) -> Optional[Any]:
+        return self.storage.get(f"{self.container_prefix}/{key}")
+    
+    def get_metadata_only(self, key: str) -> Optional[Dict]:
+        return self.storage.get_metadata_only(f"{self.container_prefix}/{key}")
+    
+    def delete(self, key: str) -> bool:
+        return self.storage.delete(f"{self.container_prefix}/{key}")
+    
+    def list(self, prefix: str = "") -> List[str]:
+        full_prefix = f"{self.container_prefix}/{prefix}" if prefix else f"{self.container_prefix}/"
+        keys = self.storage.list(full_prefix)
+        # Remove container prefix from returned keys
+        container_prefix_with_slash = f"{self.container_prefix}/"
+        return [key[len(container_prefix_with_slash):] for key in keys if key.startswith(container_prefix_with_slash)]
+    
+    def find(self, criteria: Dict[str, Any]) -> List[str]:
+        # Find within this container's prefix
+        all_keys = self.list()
+        matching_keys = []
+        
+        for key in all_keys:
+            metadata = self.get_metadata_only(key)
+            if metadata:
+                matches = True
+                for criterion_key, criterion_value in criteria.items():
+                    if metadata.get(criterion_key) != criterion_value:
+                        matches = False
+                        break
+                
+                if matches:
+                    matching_keys.append(key)
+        
+        return matching_keys
+    
+    def exists(self, key: str) -> bool:
+        return self.storage.exists(f"{self.container_prefix}/{key}")
 
 
-# Utility functions for storage management
+# Create storage containers for different data types
+uploaded_files = StorageContainer(_main_storage, "uploaded_files")
+extractions = StorageContainer(_main_storage, "extractions")
+comparisons = StorageContainer(_main_storage, "comparisons")
+reconciliations = StorageContainer(_main_storage, "reconciliations")
+
+logger.info("Storage services initialized successfully")
+
+
+# Utility functions
 def get_storage_info() -> Dict[str, Any]:
     """Get information about current storage configuration"""
-    storage_type = os.getenv('STORAGE_TYPE', 'local').lower()
-    info = {
-        'storage_type': storage_type,
-        'backend_class': _backend.__class__.__name__,
+    return {
+        'storage_type': 's3',
+        'bucket_name': _main_storage.bucket_name,
+        'prefix': _main_storage.prefix,
+        'region': _main_storage.region,
         's3_available': S3_AVAILABLE
     }
 
-    if isinstance(_backend, S3StorageBackend):
-        info.update({
-            'bucket_name': _backend.bucket_name,
-            'prefix': _backend.prefix,
-            'region': _backend.region
-        })
 
-    return info
-
-
-def switch_storage_backend(backend: StorageBackend):
-    """Switch to a different storage backend - use with caution"""
-    global _backend, uploaded_files, extractions, comparisons, reconciliations
-
-    logger.warning("Switching storage backend - existing data may become inaccessible")
-    _backend = backend
-
-    # Recreate storage instances with new backend
-    uploaded_files = EnhancedStorage(_backend)
-    extractions = EnhancedStorage(_backend)
-    comparisons = EnhancedStorage(_backend)
-    reconciliations = EnhancedStorage(_backend)
-
-
-# Initialize logging
-logger.info(f"Storage initialized: {get_storage_info()}")
+# Legacy compatibility (if needed)
+def get_storage_backend():
+    """Get the main storage backend for direct access"""
+    return _main_storage

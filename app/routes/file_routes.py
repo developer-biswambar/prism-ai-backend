@@ -612,7 +612,7 @@ async def validate_file_name(request: dict):
 
         # Check if name already exists - only load metadata for each file
         for file_id in file_keys:
-            file_info = uploaded_files.get_metadata_only(file_id, "info")
+            file_info = uploaded_files.get_metadata_only(file_id)
             if file_info:
                 existing_name = file_info.get("custom_name") or file_info.get("filename")
                 if existing_name and existing_name.lower() == filename.lower():
@@ -749,9 +749,9 @@ async def upload_file(
 
         # Validate custom name if provided - optimized to only load metadata
         if custom_name:
-            file_keys = uploaded_files.keys_only()
+            file_keys = uploaded_files.list()
             for existing_file_id in file_keys:
-                existing_file_info = uploaded_files.get_metadata_only(existing_file_id, "info")
+                existing_file_info = uploaded_files.get_metadata_only(existing_file_id)
                 if existing_file_info:
                     existing_name = existing_file_info.get("custom_name") or existing_file_info.get("filename")
                     if existing_name and existing_name.lower() == custom_name.strip().lower():
@@ -773,10 +773,12 @@ async def upload_file(
         }
 
         # Store in memory
-        uploaded_files[file_id] = {
+        # Store with new storage interface - data and metadata separated for performance
+        file_data = {
             "info": file_info,
             "data": df
         }
+        uploaded_files.save(file_id, file_data, file_info)
 
         # Add cleanup task for very large files (optional)
         cleanup_threshold = int(os.getenv("LARGE_FILE_THRESHOLD", "100000"))
@@ -913,10 +915,10 @@ async def upload_file(
 @router.get("/{file_id}/sheets")
 async def get_file_sheets(file_id: str):
     """Get available sheets for an Excel file"""
-    if file_id not in uploaded_files:
+    if not uploaded_files.exists(file_id):
         raise HTTPException(404, "File not found")
 
-    file_data = uploaded_files[file_id]
+    file_data = uploaded_files.get(file_id)
     file_info = file_data["info"]
 
     if not file_info.get("is_excel", False):
@@ -936,10 +938,10 @@ async def get_file_sheets(file_id: str):
 @router.post("/{file_id}/select-sheet")
 async def select_sheet(file_id: str, request: UpdateSheetRequest):
     """Switch to a different sheet in an Excel file"""
-    if file_id not in uploaded_files:
+    if not uploaded_files.exists(file_id):
         raise HTTPException(404, "File not found")
 
-    file_data = uploaded_files[file_id]
+    file_data = uploaded_files.get(file_id)
     file_info = file_data["info"]
 
     if not file_info.get("is_excel", False):
@@ -974,13 +976,16 @@ async def select_sheet(file_id: str, request: UpdateSheetRequest):
         # Step 4: Normalize datetime columns for the new sheet
         df = normalize_datetime_columns(df)
 
-        # Update stored data
-        uploaded_files[file_id]["data"] = df
-        uploaded_files[file_id]["info"]["selected_sheet"] = request.sheet_name
-        uploaded_files[file_id]["info"]["total_rows"] = len(df)
-        uploaded_files[file_id]["info"]["total_columns"] = len(df.columns)
-        uploaded_files[file_id]["info"]["columns"] = list(df.columns)
-        uploaded_files[file_id]["info"]["data_types"] = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        # Update stored data with new storage interface
+        file_data["data"] = df
+        file_data["info"]["selected_sheet"] = request.sheet_name
+        file_data["info"]["total_rows"] = len(df)
+        file_data["info"]["total_columns"] = len(df.columns)
+        file_data["info"]["columns"] = list(df.columns)
+        file_data["info"]["data_types"] = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        
+        # Save updated data and metadata
+        uploaded_files.save(file_id, file_data, file_data["info"])
 
         logger.info(
             f"Switched to sheet '{request.sheet_name}' for file {file_info['filename']}: {len(df):,} rows, {len(df.columns)} columns")
@@ -1013,40 +1018,111 @@ async def select_sheet(file_id: str, request: UpdateSheetRequest):
 
 
 @router.get("/")
-async def list_files():
-    """List all uploaded files with enhanced information - optimized to only load metadata"""
+async def list_files(include_reconciliation_results: bool = True):
+    """List all uploaded files with enhanced information - optimized to only load metadata
+    
+    Args:
+        include_reconciliation_results: Whether to include reconciliation results as downloadable files (default: True)
+    """
     try:
         files = []
         total_rows = 0
         total_size_mb = 0
 
         # Get only file keys first (much faster than loading all data)
-        file_keys = uploaded_files.keys_only()
+        file_keys = uploaded_files.list()
         
-        logger.info(f"FileRoutes: Listing {len(file_keys)} files (metadata-only)")
+        logger.info(f"FileRoutes: Listing {len(file_keys)} uploaded files (metadata-only)")
 
         # Load only the metadata for each file, not the actual DataFrame data
         for file_id in file_keys:
-            file_info = uploaded_files.get_metadata_only(file_id, "info")
+            file_info = uploaded_files.get_metadata_only(file_id)
             if file_info:
-                files.append(file_info.copy())
+                # Mark as uploaded file
+                file_info_copy = file_info.copy()
+                file_info_copy["file_source"] = "uploaded"
+                files.append(file_info_copy)
                 total_rows += file_info.get("total_rows", 0)
                 total_size_mb += file_info.get("file_size_mb", 0)
 
-        logger.info(f"FileRoutes: Successfully listed {len(files)} files without loading DataFrame data")
+        # Add reconciliation results if requested
+        reconciliation_files = []
+        if include_reconciliation_results:
+            try:
+                # Import reconciliation storage
+                from app.services.reconciliation_service import optimized_reconciliation_storage
+                
+                # Get reconciliation result keys
+                recon_keys = optimized_reconciliation_storage.storage.list()
+                logger.info(f"FileRoutes: Found {len(recon_keys)} reconciliation results")
+                
+                for recon_id in recon_keys:
+                    try:
+                        # Get only metadata from reconciliation results - OPTIMIZED for /list endpoint performance
+                        recon_data = optimized_reconciliation_storage.get_metadata_only(recon_id)
+                        if recon_data:
+                            # Create file-like metadata for reconciliation results
+                            row_counts = recon_data.get('row_counts', {})
+                            matched = row_counts.get('matched', 0)
+                            unmatched_a = row_counts.get('unmatched_a', 0)
+                            unmatched_b = row_counts.get('unmatched_b', 0)
+                            total_recon_rows = matched + unmatched_a + unmatched_b
+                            
+                            recon_file_info = {
+                                "file_id": recon_id,
+                                "filename": f"reconciliation_{recon_id}.xlsx",
+                                "custom_name": None,
+                                "file_type": "reconciliation",
+                                "file_source": "reconciliation",
+                                "total_rows": total_recon_rows,
+                                "total_columns": 0,  # Column count not available in metadata-only mode for performance
+                                "upload_time": recon_data.get('timestamp', datetime.utcnow()).isoformat() if hasattr(recon_data.get('timestamp', ''), 'isoformat') else str(recon_data.get('timestamp', datetime.utcnow().isoformat())),
+                                "file_size_mb": 0,  # Calculate if needed
+                                "columns": [],  # Column list not available in metadata-only mode for performance
+                                "reconciliation_summary": {
+                                    "matched_records": matched,
+                                    "unmatched_file_a": unmatched_a,
+                                    "unmatched_file_b": unmatched_b,
+                                    "match_percentage": round((matched / max(total_recon_rows, 1)) * 100, 2)
+                                }
+                            }
+                            
+                            reconciliation_files.append(recon_file_info)
+                            total_rows += total_recon_rows
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to process reconciliation result {recon_id}: {e}")
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Failed to load reconciliation results: {e}")
+
+        # Combine uploaded files and reconciliation results
+        all_files = files + reconciliation_files
+        
+        logger.info(f"FileRoutes: Successfully listed {len(files)} uploaded files and {len(reconciliation_files)} reconciliation results")
+
+        response_data = {
+            "files": all_files,
+            "summary": {
+                "total_files": len(all_files),
+                "uploaded_files": len(files),
+                "reconciliation_results": len(reconciliation_files),
+                "total_rows": total_rows,
+                "total_size_mb": round(total_size_mb, 2)
+            }
+        }
+
+        message = f"Retrieved {len(all_files)} total files"
+        if include_reconciliation_results:
+            message += f" ({len(files)} uploaded, {len(reconciliation_files)} reconciliation results)"
 
         return {
             "success": True,
-            "message": f"Retrieved {len(files)} files",
-            "data": {
-                "files": files,
-                "summary": {
-                    "total_files": len(files),
-                    "total_rows": total_rows,
-                    "total_size_mb": round(total_size_mb, 2)
-                }
-            }
+            "message": message,
+            "data": response_data
         }
+        
     except Exception as e:
         logger.error(f"List files error: {e}")
         return {
@@ -1058,67 +1134,193 @@ async def list_files():
 
 @router.get("/{file_id}")
 async def get_file_info(file_id: str, include_sample: bool = False, sample_rows: int = 10):
-    """Get detailed information about a specific file"""
-    if file_id not in uploaded_files:
-        raise HTTPException(404, "File not found")
+    """Get detailed information about a specific file or reconciliation result"""
+    
+    # Check if it's a regular uploaded file
+    if uploaded_files.exists(file_id):
+        file_data = uploaded_files.get(file_id)
+        df = file_data["data"]
 
-    file_data = uploaded_files[file_id]
-    df = file_data["data"]
+        response_data = {
+            "info": file_data["info"],
+        }
 
-    response_data = {
-        "info": file_data["info"],
-    }
+        if include_sample:
+            # Get sample data (limited for large files)
+            max_sample_rows = int(os.getenv("MAX_SAMPLE_ROWS", "100"))
+            sample_data = df.head(min(sample_rows, max_sample_rows)).to_dict(orient='records')
+            response_data["sample_data"] = sample_data
 
-    if include_sample:
-        # Get sample data (limited for large files)
-        max_sample_rows = int(os.getenv("MAX_SAMPLE_ROWS", "100"))
-        sample_data = df.head(min(sample_rows, max_sample_rows)).to_dict(orient='records')
-        response_data["sample_data"] = sample_data
+            # Enhanced column statistics
+            column_stats = {}
+            for col in df.columns:
+                col_data = df[col]
+                column_stats[col] = {
+                    "dtype": str(col_data.dtype),
+                    "null_count": int(col_data.isna().sum()),
+                    "null_percentage": round((col_data.isna().sum() / len(df)) * 100, 2),
+                    "unique_count": int(col_data.nunique()),
+                    "sample_values": col_data.dropna().head(5).astype(str).tolist()
+                }
 
-        # Enhanced column statistics
-        column_stats = {}
-        for col in df.columns:
-            col_data = df[col]
-            column_stats[col] = {
-                "dtype": str(col_data.dtype),
-                "null_count": int(col_data.isna().sum()),
-                "null_percentage": round((col_data.isna().sum() / len(df)) * 100, 2),
-                "unique_count": int(col_data.nunique()),
-                "sample_values": col_data.dropna().head(5).astype(str).tolist()
+                # Add numeric statistics for numeric columns
+                if pd.api.types.is_numeric_dtype(col_data):
+                    column_stats[col].update({
+                        "min": float(col_data.min()) if not col_data.isna().all() else None,
+                        "max": float(col_data.max()) if not col_data.isna().all() else None,
+                        "mean": float(col_data.mean()) if not col_data.isna().all() else None
+                    })
+
+            response_data["column_statistics"] = column_stats
+
+        return {
+            "success": True,
+            "message": "File details retrieved",
+            "data": response_data
+        }
+    
+    # Check if it's a reconciliation result
+    try:
+        from app.services.reconciliation_service import optimized_reconciliation_storage
+        
+        recon_data = optimized_reconciliation_storage.get_results(file_id)
+        if recon_data:
+            # Create response for reconciliation result
+            row_counts = recon_data.get('row_counts', {})
+            matched = row_counts.get('matched', 0)
+            unmatched_a = row_counts.get('unmatched_a', 0)
+            unmatched_b = row_counts.get('unmatched_b', 0)
+            total_rows = matched + unmatched_a + unmatched_b
+            
+            # Get columns from first matched record if available
+            columns = []
+            if recon_data.get('matched'):
+                columns = list(recon_data['matched'][0].keys())
+            elif recon_data.get('unmatched_file_a'):
+                columns = list(recon_data['unmatched_file_a'][0].keys())
+            elif recon_data.get('unmatched_file_b'):
+                columns = list(recon_data['unmatched_file_b'][0].keys())
+            
+            recon_info = {
+                "file_id": file_id,
+                "filename": f"reconciliation_{file_id}.xlsx",
+                "file_type": "reconciliation",
+                "file_source": "reconciliation",
+                "total_rows": total_rows,
+                "total_columns": len(columns),
+                "columns": columns,
+                "upload_time": recon_data.get('timestamp', datetime.utcnow()).isoformat() if hasattr(recon_data.get('timestamp', ''), 'isoformat') else str(recon_data.get('timestamp', datetime.utcnow().isoformat())),
+                "reconciliation_summary": {
+                    "matched_records": matched,
+                    "unmatched_file_a": unmatched_a,
+                    "unmatched_file_b": unmatched_b,
+                    "match_percentage": round((matched / max(total_rows, 1)) * 100, 2)
+                }
             }
-
-            # Add numeric statistics for numeric columns
-            if pd.api.types.is_numeric_dtype(col_data):
-                column_stats[col].update({
-                    "min": float(col_data.min()) if not col_data.isna().all() else None,
-                    "max": float(col_data.max()) if not col_data.isna().all() else None,
-                    "mean": float(col_data.mean()) if not col_data.isna().all() else None
-                })
-
-        response_data["column_statistics"] = column_stats
-
-    return {
-        "success": True,
-        "message": "File details retrieved",
-        "data": response_data
-    }
+            
+            response_data = {
+                "info": recon_info,
+            }
+            
+            if include_sample:
+                # Get sample data from reconciliation results
+                max_sample_rows = int(os.getenv("MAX_SAMPLE_ROWS", "100"))
+                sample_limit = min(sample_rows, max_sample_rows)
+                
+                sample_data = []
+                # Add samples from matched records first
+                if recon_data.get('matched'):
+                    sample_data.extend(recon_data['matched'][:sample_limit])
+                
+                # Add samples from unmatched if we need more
+                remaining = sample_limit - len(sample_data)
+                if remaining > 0 and recon_data.get('unmatched_file_a'):
+                    sample_data.extend(recon_data['unmatched_file_a'][:remaining])
+                
+                remaining = sample_limit - len(sample_data)
+                if remaining > 0 and recon_data.get('unmatched_file_b'):
+                    sample_data.extend(recon_data['unmatched_file_b'][:remaining])
+                
+                response_data["sample_data"] = sample_data[:sample_limit]
+                
+                # Create basic column statistics for reconciliation results
+                if columns:
+                    column_stats = {}
+                    all_records = []
+                    if recon_data.get('matched'):
+                        all_records.extend(recon_data['matched'])
+                    if recon_data.get('unmatched_file_a'):
+                        all_records.extend(recon_data['unmatched_file_a'])
+                    if recon_data.get('unmatched_file_b'):
+                        all_records.extend(recon_data['unmatched_file_b'])
+                    
+                    if all_records:
+                        temp_df = pd.DataFrame(all_records)
+                        for col in columns:
+                            if col in temp_df.columns:
+                                col_data = temp_df[col]
+                                column_stats[col] = {
+                                    "dtype": str(col_data.dtype),
+                                    "null_count": int(col_data.isna().sum()),
+                                    "null_percentage": round((col_data.isna().sum() / len(temp_df)) * 100, 2),
+                                    "unique_count": int(col_data.nunique()),
+                                    "sample_values": col_data.dropna().head(5).astype(str).tolist()
+                                }
+                    
+                    response_data["column_statistics"] = column_stats
+            
+            return {
+                "success": True,
+                "message": "Reconciliation result details retrieved",
+                "data": response_data
+            }
+            
+    except Exception as e:
+        logger.warning(f"Error checking reconciliation result {file_id}: {e}")
+    
+    # If neither uploaded file nor reconciliation result found
+    raise HTTPException(404, "File or reconciliation result not found")
 
 
 @router.delete("/{file_id}")
 async def delete_file(file_id: str):
-    """Delete a file from memory"""
-    if file_id not in uploaded_files:
-        raise HTTPException(404, "File not found")
+    """Delete a file or reconciliation result from storage"""
+    
+    # Try to delete from uploaded files first
+    if uploaded_files.exists(file_id):
+        file_data = uploaded_files.get(file_id)
+        file_info = file_data["info"]
+        uploaded_files.delete(file_id)
 
-    file_info = uploaded_files[file_id]["info"]
-    del uploaded_files[file_id]
+        logger.info(f"Deleted uploaded file: {file_info['filename']} ({file_info['total_rows']:,} rows)")
 
-    logger.info(f"Deleted file: {file_info['filename']} ({file_info['total_rows']:,} rows)")
-
-    return {
-        "success": True,
-        "message": f"File {file_info['filename']} deleted successfully"
-    }
+        return {
+            "success": True,
+            "message": f"File {file_info['filename']} deleted successfully"
+        }
+    
+    # Try to delete reconciliation result
+    try:
+        from app.services.reconciliation_service import optimized_reconciliation_storage
+        
+        # Check if reconciliation result exists - OPTIMIZED to avoid loading full data
+        if optimized_reconciliation_storage.storage.exists(file_id):
+            # Delete the reconciliation result
+            success = optimized_reconciliation_storage.delete_results(file_id)
+            if success:
+                logger.info(f"Deleted reconciliation result: {file_id}")
+                return {
+                    "success": True,
+                    "message": f"Reconciliation result {file_id} deleted successfully"
+                }
+            else:
+                raise HTTPException(500, f"Failed to delete reconciliation result {file_id}")
+        
+    except Exception as e:
+        logger.warning(f"Error checking/deleting reconciliation result {file_id}: {e}")
+    
+    # If neither found
+    raise HTTPException(404, "File or reconciliation result not found")
 
 
 @router.post("/bulk-delete")
@@ -1137,10 +1339,11 @@ async def preview_file_data(
         columns: str = None
 ):
     """Get a preview of file data with pagination"""
-    if file_id not in uploaded_files:
+    if not uploaded_files.exists(file_id):
         raise HTTPException(404, "File not found")
 
-    df = uploaded_files[file_id]["data"]
+    file_data = uploaded_files.get(file_id)
+    df = file_data["data"]
 
     # Limit preview rows based on environment variable
     max_preview_rows = int(os.getenv("MAX_PREVIEW_ROWS", "1000"))

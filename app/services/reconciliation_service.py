@@ -2076,29 +2076,13 @@ class OptimizedFileProcessor:
 # Create optimized storage for results using centralized storage service
 class OptimizedReconciliationStorage:
     def __init__(self):
-        # Use centralized storage service (supports both local and S3)
+        # Use new simplified storage service
         from app.services.storage_service import reconciliations
-        self.storage_backend = reconciliations
-        logger.info(f"ReconciliationStorage: Initialized with {self.storage_backend.backend.__class__.__name__} backend")
-
-    @property 
-    def storage(self):
-        """Backward compatibility property for len() operations"""
-        class StorageDict:
-            def __init__(self, backend):
-                self.backend = backend
-            
-            def __len__(self):
-                try:
-                    return len(self.backend.keys())
-                except Exception as e:
-                    logger.warning(f"ReconciliationStorage: Failed to get storage count: {e}")
-                    return 0
-                    
-        return StorageDict(self.storage_backend)
+        self.storage = reconciliations
+        logger.info(f"ReconciliationStorage: Initialized with simplified S3 storage service")
 
     def store_results(self, recon_id: str, results: Dict[str, pd.DataFrame]) -> bool:
-        """Store results with optimized format using centralized storage"""
+        """Store results with metadata separation for optimal performance"""
         import time
         start_time = time.time()
         
@@ -2109,11 +2093,10 @@ class OptimizedReconciliationStorage:
             unmatched_b_count = len(results['unmatched_file_b'])
             total_records = matched_count + unmatched_a_count + unmatched_b_count
             
-            backend_type = self.storage_backend.backend.__class__.__name__
-            logger.info(f"ReconciliationStorage STORE: {recon_id} - {total_records} total records ({matched_count} matched, {unmatched_a_count} unmatched_a, {unmatched_b_count} unmatched_b) using {backend_type}")
+            logger.info(f"ReconciliationStorage STORE: {recon_id} - {total_records} total records ({matched_count} matched, {unmatched_a_count} unmatched_a, {unmatched_b_count} unmatched_b)")
             
             # Convert to optimized format for storage
-            optimized_results = {
+            full_data = {
                 'matched': results['matched'].to_dict('records'),
                 'unmatched_file_a': results['unmatched_file_a'].to_dict('records'),
                 'unmatched_file_b': results['unmatched_file_b'].to_dict('records'),
@@ -2124,44 +2107,46 @@ class OptimizedReconciliationStorage:
                     'unmatched_b': unmatched_b_count
                 }
             }
+            
+            # Create metadata for efficient /list endpoint access
+            metadata = {
+                'reconciliation_id': recon_id,
+                'timestamp': pd.Timestamp.now(),
+                'row_counts': {
+                    'matched': matched_count,
+                    'unmatched_a': unmatched_a_count,
+                    'unmatched_b': unmatched_b_count
+                },
+                'total_records': total_records,
+                'file_type': 'reconciliation',
+                'file_source': 'reconciliation'
+            }
 
-            # Calculate serialized size for performance monitoring
-            import sys
-            estimated_size = sys.getsizeof(str(optimized_results))
-            logger.debug(f"ReconciliationStorage STORE: {recon_id} - estimated serialized size: {estimated_size / 1024:.1f}KB")
-
-            # Use centralized storage (local or S3 based on configuration)
-            try:
-                self.storage_backend[recon_id] = optimized_results
-                success = True
-            except Exception as storage_error:
-                logger.error(f"ReconciliationStorage STORE FAILED: {recon_id} - storage error: {storage_error}")
-                success = False
+            # Store with metadata separation for performance
+            success = self.storage.save(recon_id, full_data, metadata)
             
             elapsed = time.time() - start_time
             if success:
-                logger.info(f"ReconciliationStorage STORE SUCCESS: {recon_id} stored in {elapsed:.3f}s using {backend_type}")
+                logger.info(f"ReconciliationStorage STORE SUCCESS: {recon_id} stored in {elapsed:.3f}s")
             else:
-                logger.error(f"ReconciliationStorage STORE FAILED: {recon_id} failed after {elapsed:.3f}s using {backend_type}")
+                logger.error(f"ReconciliationStorage STORE FAILED: {recon_id} failed after {elapsed:.3f}s")
             
             return success
             
         except Exception as e:
             elapsed = time.time() - start_time
-            backend_type = getattr(self.storage_backend.backend, '__class__', {}).get('__name__', 'Unknown')
-            logger.error(f"ReconciliationStorage STORE ERROR: {recon_id} failed after {elapsed:.3f}s using {backend_type} - {e}")
+            logger.error(f"ReconciliationStorage STORE ERROR: {recon_id} failed after {elapsed:.3f}s - {e}")
             return False
 
     def get_results(self, recon_id: str) -> Optional[Dict]:
-        """Get stored results from centralized storage"""
+        """Get full stored results"""
         import time
         start_time = time.time()
         
         try:
-            backend_type = self.storage_backend.backend.__class__.__name__
-            logger.info(f"ReconciliationStorage RETRIEVE: {recon_id} using {backend_type}")
+            logger.info(f"ReconciliationStorage RETRIEVE: {recon_id}")
             
-            result = self.storage_backend.get(recon_id)
+            result = self.storage.get(recon_id)
             elapsed = time.time() - start_time
             
             if result:
@@ -2173,30 +2158,61 @@ class OptimizedReconciliationStorage:
                 total_records = matched + unmatched_a + unmatched_b
                 
                 timestamp = result.get('timestamp', 'unknown')
-                logger.info(f"ReconciliationStorage RETRIEVE SUCCESS: {recon_id} retrieved in {elapsed:.3f}s using {backend_type} - {total_records} records (stored: {timestamp})")
+                logger.info(f"ReconciliationStorage RETRIEVE SUCCESS: {recon_id} retrieved in {elapsed:.3f}s - {total_records} records")
             else:
-                logger.info(f"ReconciliationStorage RETRIEVE NOT FOUND: {recon_id} not found in {elapsed:.3f}s using {backend_type}")
+                logger.info(f"ReconciliationStorage RETRIEVE NOT FOUND: {recon_id} not found in {elapsed:.3f}s")
                 
             return result
             
         except Exception as e:
             elapsed = time.time() - start_time
-            backend_type = getattr(self.storage_backend.backend, '__class__', {}).get('__name__', 'Unknown')
-            logger.error(f"ReconciliationStorage RETRIEVE ERROR: {recon_id} failed after {elapsed:.3f}s using {backend_type} - {e}")
+            logger.error(f"ReconciliationStorage RETRIEVE ERROR: {recon_id} failed after {elapsed:.3f}s - {e}")
+            return None
+
+    def get_metadata_only(self, recon_id: str) -> Optional[Dict]:
+        """Get only metadata from stored results - TRUE metadata-only access for optimal performance"""
+        import time
+        start_time = time.time()
+        
+        try:
+            logger.debug(f"ReconciliationStorage METADATA: {recon_id}")
+            
+            # Use TRUE metadata-only access - no full data loading
+            metadata = self.storage.get_metadata_only(recon_id)
+            elapsed = time.time() - start_time
+            
+            if metadata:
+                # Extract only the metadata fields we need for file listing
+                metadata_result = {
+                    'timestamp': metadata.get('timestamp'),
+                    'row_counts': metadata.get('row_counts', {}),
+                    'reconciliation_id': recon_id
+                }
+                
+                total_records = sum(metadata_result['row_counts'].values())
+                logger.debug(f"ReconciliationStorage METADATA SUCCESS: {recon_id} metadata retrieved in {elapsed:.3f}s - {total_records} records")
+                return metadata_result
+            else:
+                logger.debug(f"ReconciliationStorage METADATA NOT FOUND: {recon_id} not found in {elapsed:.3f}s")
+                return None
+                
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"ReconciliationStorage METADATA ERROR: {recon_id} failed after {elapsed:.3f}s - {e}")
             return None
 
     def delete_results(self, recon_id: str) -> bool:
-        """Delete stored results from centralized storage"""
+        """Delete stored results"""
         try:
             logger.debug(f"ReconciliationStorage: Deleting results for {recon_id}")
             
-            try:
-                del self.storage_backend[recon_id]
+            success = self.storage.delete(recon_id)
+            if success:
                 logger.debug(f"ReconciliationStorage: Successfully deleted results for {recon_id}")
-                return True
-            except KeyError:
-                logger.debug(f"ReconciliationStorage: Results for {recon_id} not found for deletion")
-                return False
+            else:
+                logger.debug(f"ReconciliationStorage: Failed to delete results for {recon_id}")
+            
+            return success
             
         except Exception as e:
             logger.error(f"ReconciliationStorage: Error deleting results for {recon_id}: {e}")
