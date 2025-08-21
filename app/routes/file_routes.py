@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import UploadFile, File, HTTPException, APIRouter, BackgroundTasks, Form, Request
 from pydantic import BaseModel
 
-from app.routes.delta_routes import get_file_by_id
+# Removed delta_routes import - using direct storage access instead
 from app.utils.uuid_generator import generate_uuid
 
 # Load environment variables
@@ -1226,8 +1226,15 @@ async def get_column_unique_values(
     """Get unique values for a specific column in a file with cascading filter support"""
 
     try:
-        # Get the file DataFrame
-        df = await get_file_by_id(file_id)
+        # Get the file DataFrame directly from storage
+        if not uploaded_files.exists(file_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"File with ID {file_id} not found"
+            )
+        
+        file_data = uploaded_files.get(file_id)
+        df = file_data["data"]
 
         if column_name not in df.columns:
             raise HTTPException(
@@ -1277,15 +1284,23 @@ async def get_column_unique_values(
         # Check if this might be a date column by sampling some values using shared date utilities
         from app.utils.date_utils import normalize_date_value
         sample_size = min(50, len(column_data))
-        sample_values = column_data.sample(n=sample_size).tolist()
+        
+        # Safe sampling that handles small datasets
+        if sample_size > 0:
+            sample_values = column_data.sample(n=sample_size, random_state=42).tolist()
+        else:
+            sample_values = []
 
         # Test if this looks like a date column using updated date utilities
         parsed_dates = 0
-        for value in sample_values[:10]:  # Test first 10 samples
+        test_samples = sample_values[:10] if sample_values else []
+        
+        for value in test_samples:
             if normalize_date_value(value) is not None:
                 parsed_dates += 1
 
-        is_date_column = parsed_dates >= 5  # If 5+ out of 10 samples parse as dates
+        # Only consider it a date column if we have enough samples and enough parsed dates
+        is_date_column = len(test_samples) >= 5 and parsed_dates >= 5
 
         # Get unique values
         unique_values = column_data.unique()
