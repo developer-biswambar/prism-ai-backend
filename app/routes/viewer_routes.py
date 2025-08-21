@@ -362,10 +362,10 @@ async def download_modified_file(
 ):
     """Download the modified file in specified format"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         df = file_data["data"]
         file_info = file_data["info"]
 
