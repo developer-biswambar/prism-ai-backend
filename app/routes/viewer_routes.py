@@ -71,10 +71,10 @@ async def get_file_data(
 ):
     """Get paginated file data for the viewer with filename"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         df = file_data["data"]
         file_info = file_data["info"]
 
@@ -174,10 +174,10 @@ async def get_file_data(
 async def get_file_info_for_viewer(file_id: str):
     """Get basic file information for the viewer header"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         file_info = file_data["info"]
         df = file_data["data"]
 
@@ -205,7 +205,7 @@ async def get_file_info_for_viewer(file_id: str):
 async def update_file_data(file_id: str, request: UpdateFileDataRequest):
     """Update file data from the viewer"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
         # Extract updated data
@@ -220,14 +220,18 @@ async def update_file_data(file_id: str, request: UpdateFileDataRequest):
         # Create new DataFrame from updated data
         df = pd.DataFrame(rows, columns=columns)
 
-        # Update the stored file data
-        uploaded_files[file_id]["data"] = df
+        # Get current file data and update it
+        file_data = uploaded_files.get(file_id)
+        file_data["data"] = df
 
         # Update file info
-        file_info = uploaded_files[file_id]["info"]
+        file_info = file_data["info"]
         file_info["total_rows"] = len(df)
         file_info["columns"] = list(df.columns)
-        file_info["last_modified"] = datetime.utcnow().isoformat()
+        file_info["last_modified"] = datetime.now().isoformat()
+        
+        # Save updated data and metadata
+        uploaded_files.save(file_id, file_data, file_info)
 
         logger.info(
             f"Updated file {file_info.get('filename', file_id)} with {len(df)} rows and {len(df.columns)} columns")
@@ -254,12 +258,13 @@ async def update_file_data(file_id: str, request: UpdateFileDataRequest):
 async def patch_file_data(file_id: str, request: PatchFileDataRequest):
     """Apply incremental changes to file data - more efficient than full updates"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
         # Get the current DataFrame
-        df = uploaded_files[file_id]["data"].copy()
-        file_info = uploaded_files[file_id]["info"]
+        file_data = uploaded_files.get(file_id)
+        df = file_data["data"].copy()
+        file_info = file_data["info"]
 
         changes_applied = {
             "cell_changes": 0,
@@ -318,12 +323,15 @@ async def patch_file_data(file_id: str, request: PatchFileDataRequest):
             logger.info(f"Added {len(request.added_rows)} rows to file {file_id}")
 
         # Update the stored file data
-        uploaded_files[file_id]["data"] = df
+        file_data["data"] = df
 
         # Update file info
         file_info["total_rows"] = len(df)
         file_info["columns"] = list(df.columns)
-        file_info["last_modified"] = datetime.utcnow().isoformat()
+        file_info["last_modified"] = datetime.now().isoformat()
+        
+        # Save updated data and metadata
+        uploaded_files.save(file_id, file_data, file_info)
 
         total_changes = sum(changes_applied.values())
         logger.info(f"Applied {total_changes} changes to file {file_info.get('filename', file_id)}: {changes_applied}")
@@ -410,10 +418,10 @@ async def download_modified_file(
 async def get_file_stats(file_id: str):
     """Get basic statistics about the file"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         df = file_data["data"]
         file_info = file_data["info"]
 
@@ -465,10 +473,10 @@ async def get_file_stats(file_id: str):
 async def validate_file_data(file_id: str):
     """Validate file data integrity"""
     try:
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(404, f"File {file_id} not found")
 
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         df = file_data["data"]
         file_info = file_data["info"]
 

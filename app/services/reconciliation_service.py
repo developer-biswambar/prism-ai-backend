@@ -2170,30 +2170,30 @@ class OptimizedReconciliationStorage:
             return None
 
     def get_metadata_only(self, recon_id: str) -> Optional[Dict]:
-        """Get only metadata from stored results - TRUE metadata-only access for optimal performance"""
+        """Get only metadata from stored results - NEW FORMAT ONLY"""
         import time
         start_time = time.time()
         
         try:
             logger.debug(f"ReconciliationStorage METADATA: {recon_id}")
             
-            # Use TRUE metadata-only access - no full data loading
+            # Use TRUE metadata-only access - new format only
             metadata = self.storage.get_metadata_only(recon_id)
-            elapsed = time.time() - start_time
             
             if metadata:
-                # Extract only the metadata fields we need for file listing
+                # New format with separate metadata file
                 metadata_result = {
                     'timestamp': metadata.get('timestamp'),
                     'row_counts': metadata.get('row_counts', {}),
                     'reconciliation_id': recon_id
                 }
-                
+                elapsed = time.time() - start_time
                 total_records = sum(metadata_result['row_counts'].values())
-                logger.debug(f"ReconciliationStorage METADATA SUCCESS: {recon_id} metadata retrieved in {elapsed:.3f}s - {total_records} records")
+                logger.debug(f"ReconciliationStorage METADATA SUCCESS: {recon_id} in {elapsed:.3f}s - {total_records} records")
                 return metadata_result
             else:
-                logger.debug(f"ReconciliationStorage METADATA NOT FOUND: {recon_id} not found in {elapsed:.3f}s")
+                elapsed = time.time() - start_time
+                logger.debug(f"ReconciliationStorage METADATA NOT FOUND: {recon_id} - no metadata file (old format not supported)")
                 return None
                 
         except Exception as e:
