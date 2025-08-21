@@ -606,7 +606,7 @@ async def validate_file_name(request: dict):
             }
 
         # Get only file keys first (much faster than loading all data)
-        file_keys = uploaded_files.keys_only()
+        file_keys = uploaded_files.list()
         
         logger.debug(f"FileRoutes: Validating filename '{filename}' against {len(file_keys)} files (metadata-only)")
 

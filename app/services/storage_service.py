@@ -412,6 +412,10 @@ class StorageContainer:
     
     def exists(self, key: str) -> bool:
         return self.storage.exists(f"{self.container_prefix}/{key}")
+    
+    def keys_only(self) -> List[str]:
+        """Backward compatibility method - use list() instead"""
+        return self.list()
 
 
 # Create storage containers for different data types
