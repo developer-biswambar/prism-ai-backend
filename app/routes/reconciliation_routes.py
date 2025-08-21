@@ -95,11 +95,11 @@ def get_file_by_id(file_id: str) -> UploadFile:
     # Import here to avoid circular imports
     from app.services.storage_service import uploaded_files
 
-    if file_id not in uploaded_files:
+    if not uploaded_files.exists(file_id):
         raise HTTPException(status_code=404, detail=f"File with ID {file_id} not found")
 
     try:
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         file_info = file_data["info"]
         df = file_data["data"]
 

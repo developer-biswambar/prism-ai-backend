@@ -2082,7 +2082,7 @@ class OptimizedReconciliationStorage:
         logger.info(f"ReconciliationStorage: Initialized with simplified S3 storage service")
 
     def store_results(self, recon_id: str, results: Dict[str, pd.DataFrame]) -> bool:
-        """Store results with metadata separation for optimal performance"""
+        """Store results as separate files for frontend compatibility"""
         import time
         start_time = time.time()
         
@@ -2095,43 +2095,102 @@ class OptimizedReconciliationStorage:
             
             logger.info(f"ReconciliationStorage STORE: {recon_id} - {total_records} total records ({matched_count} matched, {unmatched_a_count} unmatched_a, {unmatched_b_count} unmatched_b)")
             
-            # Convert to optimized format for storage
-            full_data = {
-                'matched': results['matched'].to_dict('records'),
-                'unmatched_file_a': results['unmatched_file_a'].to_dict('records'),
-                'unmatched_file_b': results['unmatched_file_b'].to_dict('records'),
-                'timestamp': pd.Timestamp.now(),
-                'row_counts': {
-                    'matched': matched_count,
-                    'unmatched_a': unmatched_a_count,
-                    'unmatched_b': unmatched_b_count
-                }
-            }
+            # Create timestamp for all files
+            timestamp = pd.Timestamp.now()
             
-            # Create metadata for efficient /list endpoint access
-            metadata = {
+            # Store each result type as a separate file for frontend compatibility
+            all_success = True
+            
+            # 1. Store matched results
+            if matched_count > 0:
+                matched_data = {
+                    'info': {
+                        'filename': f'reconciliation_{recon_id}_matched.xlsx',
+                        'file_type': 'reconciliation_matched',
+                        'file_source': 'reconciliation',
+                        'total_rows': matched_count,
+                        'total_columns': len(results['matched'].columns) if matched_count > 0 else 0,
+                        'columns': list(results['matched'].columns) if matched_count > 0 else [],
+                        'upload_time': timestamp.isoformat(),
+                        'reconciliation_id': recon_id,
+                        'result_type': 'matched'
+                    },
+                    'data': results['matched']
+                }
+                matched_metadata = matched_data['info']
+                success = self.storage.save(f"{recon_id}_matched", matched_data, matched_metadata)
+                all_success = all_success and success
+                if success:
+                    logger.info(f"ReconciliationStorage: Stored matched results ({matched_count} records)")
+            
+            # 2. Store unmatched file A results
+            if unmatched_a_count > 0:
+                unmatched_a_data = {
+                    'info': {
+                        'filename': f'reconciliation_{recon_id}_unmatched_a.xlsx',
+                        'file_type': 'reconciliation_unmatched_a',
+                        'file_source': 'reconciliation',
+                        'total_rows': unmatched_a_count,
+                        'total_columns': len(results['unmatched_file_a'].columns) if unmatched_a_count > 0 else 0,
+                        'columns': list(results['unmatched_file_a'].columns) if unmatched_a_count > 0 else [],
+                        'upload_time': timestamp.isoformat(),
+                        'reconciliation_id': recon_id,
+                        'result_type': 'unmatched_a'
+                    },
+                    'data': results['unmatched_file_a']
+                }
+                unmatched_a_metadata = unmatched_a_data['info']
+                success = self.storage.save(f"{recon_id}_unmatched_a", unmatched_a_data, unmatched_a_metadata)
+                all_success = all_success and success
+                if success:
+                    logger.info(f"ReconciliationStorage: Stored unmatched A results ({unmatched_a_count} records)")
+            
+            # 3. Store unmatched file B results
+            if unmatched_b_count > 0:
+                unmatched_b_data = {
+                    'info': {
+                        'filename': f'reconciliation_{recon_id}_unmatched_b.xlsx',
+                        'file_type': 'reconciliation_unmatched_b',
+                        'file_source': 'reconciliation',
+                        'total_rows': unmatched_b_count,
+                        'total_columns': len(results['unmatched_file_b'].columns) if unmatched_b_count > 0 else 0,
+                        'columns': list(results['unmatched_file_b'].columns) if unmatched_b_count > 0 else [],
+                        'upload_time': timestamp.isoformat(),
+                        'reconciliation_id': recon_id,
+                        'result_type': 'unmatched_b'
+                    },
+                    'data': results['unmatched_file_b']
+                }
+                unmatched_b_metadata = unmatched_b_data['info']
+                success = self.storage.save(f"{recon_id}_unmatched_b", unmatched_b_data, unmatched_b_metadata)
+                all_success = all_success and success
+                if success:
+                    logger.info(f"ReconciliationStorage: Stored unmatched B results ({unmatched_b_count} records)")
+            
+            # 4. Store summary metadata for /list endpoint compatibility
+            summary_metadata = {
                 'reconciliation_id': recon_id,
-                'timestamp': pd.Timestamp.now(),
+                'timestamp': timestamp,
                 'row_counts': {
                     'matched': matched_count,
                     'unmatched_a': unmatched_a_count,
                     'unmatched_b': unmatched_b_count
                 },
                 'total_records': total_records,
-                'file_type': 'reconciliation',
-                'file_source': 'reconciliation'
+                'file_type': 'reconciliation_summary',
+                'file_source': 'reconciliation',
+                'filename': f'reconciliation_{recon_id}_summary.json'
             }
-
-            # Store with metadata separation for performance
-            success = self.storage.save(recon_id, full_data, metadata)
+            summary_success = self.storage.save(recon_id, summary_metadata, summary_metadata)
+            all_success = all_success and summary_success
             
             elapsed = time.time() - start_time
-            if success:
-                logger.info(f"ReconciliationStorage STORE SUCCESS: {recon_id} stored in {elapsed:.3f}s")
+            if all_success:
+                logger.info(f"ReconciliationStorage STORE SUCCESS: {recon_id} stored as separate files in {elapsed:.3f}s")
             else:
                 logger.error(f"ReconciliationStorage STORE FAILED: {recon_id} failed after {elapsed:.3f}s")
             
-            return success
+            return all_success
             
         except Exception as e:
             elapsed = time.time() - start_time
