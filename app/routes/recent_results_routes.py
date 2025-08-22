@@ -71,54 +71,84 @@ async def get_recent_results(limit: int = 5):
         # Get Reconciliation results
         try:
             from app.services.reconciliation_service import optimized_reconciliation_storage
+            from app.services.storage_service import uploaded_files
 
-            for recon_id, recon_results in optimized_reconciliation_storage.storage.items():
-                # Get file information using new storage service
-                file_a_name = "Unknown File A"
-                file_b_name = "Unknown File B"
+            # Get all reconciliation result IDs from storage
+            # Since optimized_reconciliation_storage.storage is uploaded_files,
+            # we need to look for files with reconciliation prefixes
+            recon_file_ids = []
+            try:
+                for file_id in uploaded_files.list_files():
+                    if file_id.startswith('recon_') and ('_metadata' in file_id or '_matched' in file_id):
+                        # Extract reconciliation ID from file names like "recon_123_metadata" or "recon_123_matched"
+                        if '_metadata' in file_id:
+                            recon_id = file_id.replace('_metadata', '')
+                            if recon_id not in recon_file_ids:
+                                recon_file_ids.append(recon_id)
+                        elif '_matched' in file_id:
+                            recon_id = file_id.replace('_matched', '')
+                            if recon_id not in recon_file_ids:
+                                recon_file_ids.append(recon_id)
+            except Exception as list_error:
+                logger.warning(f"Error listing reconciliation files: {list_error}")
+                recon_file_ids = []
 
+            # Process each reconciliation result
+            for recon_id in recon_file_ids[:limit]:  # Limit to avoid too many results
                 try:
-                    from app.services.storage_service import uploaded_files
-                    # Get file list using new storage service methods
-                    if uploaded_files.count() >= 2:
-                        file_list = list(uploaded_files.list_files())
-                        if len(file_list) >= 2:
-                            # Get file info using new methods
-                            file_a_info = uploaded_files.get_file_info(file_list[0])
-                            file_b_info = uploaded_files.get_file_info(file_list[1])
-                            
-                            if file_a_info:
-                                file_a_name = file_a_info.get("custom_name") or file_a_info.get("filename", "Unknown File A")
-                            if file_b_info:
-                                file_b_name = file_b_info.get("custom_name") or file_b_info.get("filename", "Unknown File B")
-                except Exception as e:
-                    logger.warning(f"Error getting file info for reconciliation {recon_id}: {e}")
-                    pass
+                    # Get metadata first to check if this is a valid reconciliation
+                    recon_metadata = optimized_reconciliation_storage.get_metadata_only(recon_id)
+                    if not recon_metadata:
+                        continue
 
-                row_counts = recon_results.get("row_counts", {})
-                total_a = row_counts.get("matched", 0) + row_counts.get("unmatched_a", 0)
-                total_b = row_counts.get("matched", 0) + row_counts.get("unmatched_b", 0)
-                match_percentage = 0
-                if max(total_a, total_b) > 0:
-                    match_percentage = round((row_counts.get("matched", 0) / max(total_a, total_b)) * 100, 2)
+                    # Get file information using new storage service
+                    file_a_name = "Unknown File A"
+                    file_b_name = "Unknown File B"
 
-                recent_results.append(RecentResultInfo(
-                    id=recon_id,
-                    process_type="reconciliation",
-                    status="completed",
-                    created_at=recon_results["timestamp"].isoformat(),
-                    file_a=file_a_name,
-                    file_b=file_b_name,
-                    summary={
-                        "matched_records": row_counts.get("matched", 0),
-                        "unmatched_file_a": row_counts.get("unmatched_a", 0),
-                        "unmatched_file_b": row_counts.get("unmatched_b", 0),
-                        "match_percentage": match_percentage,
-                        "total_records_file_a": total_a,
-                        "total_records_file_b": total_b
-                    },
-                    processing_time_seconds=None
-                ))
+                    try:
+                        # Get file list using new storage service methods
+                        if uploaded_files.count() >= 2:
+                            file_list = list(uploaded_files.list_files())
+                            if len(file_list) >= 2:
+                                # Get file info using new methods
+                                file_a_info = uploaded_files.get_file_info(file_list[0])
+                                file_b_info = uploaded_files.get_file_info(file_list[1])
+                                
+                                if file_a_info:
+                                    file_a_name = file_a_info.get("custom_name") or file_a_info.get("filename", "Unknown File A")
+                                if file_b_info:
+                                    file_b_name = file_b_info.get("custom_name") or file_b_info.get("filename", "Unknown File B")
+                    except Exception as e:
+                        logger.warning(f"Error getting file info for reconciliation {recon_id}: {e}")
+
+                    row_counts = recon_metadata.get("row_counts", {})
+                    total_a = row_counts.get("matched", 0) + row_counts.get("unmatched_a", 0)
+                    total_b = row_counts.get("matched", 0) + row_counts.get("unmatched_b", 0)
+                    match_percentage = 0
+                    if max(total_a, total_b) > 0:
+                        match_percentage = round((row_counts.get("matched", 0) / max(total_a, total_b)) * 100, 2)
+
+                    recent_results.append(RecentResultInfo(
+                        id=recon_id,
+                        process_type="reconciliation",
+                        status="completed",
+                        created_at=recon_metadata.get("timestamp", datetime.now()).isoformat(),
+                        file_a=file_a_name,
+                        file_b=file_b_name,
+                        summary={
+                            "matched_records": row_counts.get("matched", 0),
+                            "unmatched_file_a": row_counts.get("unmatched_a", 0),
+                            "unmatched_file_b": row_counts.get("unmatched_b", 0),
+                            "match_percentage": match_percentage,
+                            "total_records_file_a": total_a,
+                            "total_records_file_b": total_b
+                        },
+                        processing_time_seconds=None
+                    ))
+                    
+                except Exception as recon_error:
+                    logger.warning(f"Error processing reconciliation result {recon_id}: {recon_error}")
+                    continue
 
         except ImportError as e:
             logger.warning(f"Could not import reconciliation storage: {e}")
@@ -129,7 +159,13 @@ async def get_recent_results(limit: int = 5):
         try:
             from app.services.transformation_service import transformation_storage
 
-            for file_transformation in transformation_storage.storage.items():
+            # Check if transformation_storage.storage exists and has items
+            if hasattr(transformation_storage, 'storage') and hasattr(transformation_storage.storage, 'items'):
+                transformation_items = transformation_storage.storage.items()
+            else:
+                transformation_items = []
+
+            for file_transformation in transformation_items:
                 try:
                     transformation_id = file_transformation[0]
                     transformation_details = file_transformation[1]
@@ -417,22 +453,32 @@ async def clear_old_results(keep_count: int = 10):
         # Clear old reconciliation results
         try:
             from app.services.reconciliation_service import optimized_reconciliation_storage
+            from app.services.storage_service import uploaded_files
 
-            if len(optimized_reconciliation_storage.storage) > keep_count:
-                # Sort by timestamp and keep only recent ones
-                sorted_recons = sorted(
-                    optimized_reconciliation_storage.storage.items(),
-                    key=lambda x: x[1]["timestamp"],
-                    reverse=True
-                )
+            # Get reconciliation IDs and their timestamps
+            recon_data = []
+            try:
+                for file_id in uploaded_files.list_files():
+                    if file_id.startswith('recon_') and '_metadata' in file_id:
+                        recon_id = file_id.replace('_metadata', '')
+                        metadata = optimized_reconciliation_storage.get_metadata_only(recon_id)
+                        if metadata:
+                            recon_data.append((recon_id, metadata.get("timestamp", datetime.now())))
+            except Exception as e:
+                logger.warning(f"Error getting reconciliation data for cleanup: {e}")
 
-                # Keep only the most recent
-                to_keep = dict(sorted_recons[:keep_count])
-                to_delete = len(optimized_reconciliation_storage.storage) - len(to_keep)
-
-                optimized_reconciliation_storage.storage.clear()
-                optimized_reconciliation_storage.storage.update(to_keep)
-                deleted_count += to_delete
+            if len(recon_data) > keep_count:
+                # Sort by timestamp and delete old ones
+                sorted_recons = sorted(recon_data, key=lambda x: x[1], reverse=True)
+                to_delete_ids = [item[0] for item in sorted_recons[keep_count:]]
+                
+                # Delete old reconciliation results
+                for recon_id in to_delete_ids:
+                    try:
+                        optimized_reconciliation_storage.delete_results(recon_id)
+                        deleted_count += 1
+                    except Exception as e:
+                        logger.warning(f"Error deleting reconciliation {recon_id}: {e}")
 
         except ImportError:
             pass
@@ -491,7 +537,16 @@ async def recent_results_health_check():
 
         try:
             from app.services.reconciliation_service import optimized_reconciliation_storage
-            recon_count = len(optimized_reconciliation_storage.storage)
+            from app.services.storage_service import uploaded_files
+            
+            # Count reconciliation results by looking for metadata files
+            recon_count = 0
+            try:
+                for file_id in uploaded_files.list_files():
+                    if file_id.startswith('recon_') and '_metadata' in file_id:
+                        recon_count += 1
+            except Exception as e:
+                logger.warning(f"Error counting reconciliation results: {e}")
         except ImportError:
             pass
 
