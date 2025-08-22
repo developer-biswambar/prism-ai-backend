@@ -7,16 +7,13 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.utils.uuid_generator import generate_uuid
+from app.services.dynamodb_rules_service import dynamodb_rules_service
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/rules", tags=["rule_management"])
-
-# In-memory storage for rules (in production, use a proper database)
-rules_storage = {}
-transformation_rules_storage = {}
 
 
 class RuleMetadata(BaseModel):
@@ -198,22 +195,28 @@ async def save_rule(request: CreateRuleRequest):
         # Sanitize the rule config to remove file-specific references
         sanitized_config = sanitize_rule_config(request.rule_config)
 
-        saved_rule = SavedReconciliationRule(
-            id=rule_id,
-            name=request.metadata.name,
-            description=request.metadata.description or "",
-            category=request.metadata.category or "general",
-            tags=request.metadata.tags or [],
-            template_id=request.metadata.template_id,
-            template_name=request.metadata.template_name,
-            created_at=timestamp,
-            updated_at=timestamp,
-            rule_config=sanitized_config,
-            usage_count=0
-        )
+        rule_data = {
+            "id": rule_id,
+            "name": request.metadata.name,
+            "description": request.metadata.description or "",
+            "category": request.metadata.category or "general",
+            "tags": request.metadata.tags or [],
+            "template_id": request.metadata.template_id,
+            "template_name": request.metadata.template_name,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "version": "1.0",
+            "rule_config": sanitized_config,
+            "usage_count": 0
+        }
 
-        rules_storage[rule_id] = saved_rule.dict()
+        # Save to DynamoDB
+        success = dynamodb_rules_service.save_rule('reconciliation', rule_data)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save rule to database")
 
+        saved_rule = SavedReconciliationRule(**rule_data)
+        
         logger.info(f"Saved new rule: {rule_id} - {request.metadata.name}")
         return saved_rule
 
@@ -231,25 +234,17 @@ async def list_rules(
 ):
     """List saved reconciliation rules with optional filtering"""
     try:
-        all_rules = list(rules_storage.values())
-
-        # Apply filters
-        filtered_rules = all_rules
-
-        if category:
-            filtered_rules = [r for r in filtered_rules if r.get('category') == category]
-
-        if template_id:
-            filtered_rules = [r for r in filtered_rules if r.get('template_id') == template_id]
-
-        # Sort by last updated (most recent first)
-        filtered_rules.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
-
-        # Apply pagination
-        paginated_rules = filtered_rules[offset:offset + limit]
+        # Get rules from DynamoDB
+        rules = dynamodb_rules_service.list_rules(
+            'reconciliation',
+            category=category,
+            template_id=template_id,
+            limit=limit,
+            offset=offset
+        )
 
         # Convert to Pydantic models
-        result = [SavedReconciliationRule(**rule) for rule in paginated_rules]
+        result = [SavedReconciliationRule(**rule) for rule in rules]
 
         return result
 
@@ -262,13 +257,15 @@ async def list_rules(
 async def get_rules_by_template(template_id: str):
     """Get all rules for a specific template"""
     try:
-        template_rules = [
-            SavedReconciliationRule(**rule)
-            for rule in rules_storage.values()
-            if rule.get('template_id') == template_id
-        ]
+        # Get rules from DynamoDB by template
+        rules = dynamodb_rules_service.list_rules(
+            'reconciliation',
+            template_id=template_id,
+            limit=1000
+        )
 
-        # Sort by usage count and last used
+        # Convert to Pydantic models and sort by usage
+        template_rules = [SavedReconciliationRule(**rule) for rule in rules]
         template_rules.sort(
             key=lambda x: (x.usage_count, x.last_used_at or ''),
             reverse=True
@@ -284,13 +281,15 @@ async def get_rules_by_template(template_id: str):
 @router.get("/{rule_id}", response_model=SavedReconciliationRule)
 async def get_rule(rule_id: str):
     """Get a specific rule by ID"""
-    if rule_id not in rules_storage:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
     try:
-        rule_data = rules_storage[rule_id]
+        rule_data = dynamodb_rules_service.get_rule('reconciliation', rule_id)
+        if not rule_data:
+            raise HTTPException(status_code=404, detail="Rule not found")
+
         return SavedReconciliationRule(**rule_data)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get rule: {str(e)}")
@@ -299,37 +298,44 @@ async def get_rule(rule_id: str):
 @router.put("/{rule_id}", response_model=SavedReconciliationRule)
 async def update_rule(rule_id: str, request: UpdateRuleRequest):
     """Update an existing rule"""
-    if rule_id not in rules_storage:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
     try:
-        rule_data = rules_storage[rule_id].copy()
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('reconciliation', rule_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+
+        # Prepare updates
+        update_data = {}
 
         # Update metadata if provided
         if request.metadata:
             if request.metadata.name:
-                rule_data['name'] = request.metadata.name
+                update_data['name'] = request.metadata.name
             if request.metadata.description is not None:
-                rule_data['description'] = request.metadata.description
+                update_data['description'] = request.metadata.description
             if request.metadata.category:
-                rule_data['category'] = request.metadata.category
+                update_data['category'] = request.metadata.category
             if request.metadata.tags is not None:
-                rule_data['tags'] = request.metadata.tags
+                update_data['tags'] = request.metadata.tags
 
         # Update rule config if provided
         if request.rule_config:
             sanitized_config = sanitize_rule_config(request.rule_config)
-            rule_data['rule_config'] = sanitized_config
+            update_data['rule_config'] = sanitized_config
 
-        # Update timestamp
-        rule_data['updated_at'] = datetime.now().isoformat()
+        # Update in DynamoDB
+        success = dynamodb_rules_service.update_rule('reconciliation', rule_id, update_data)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update rule in database")
 
-        # Save updated rule
-        rules_storage[rule_id] = rule_data
+        # Get updated rule
+        updated_rule = dynamodb_rules_service.get_rule('reconciliation', rule_id)
 
         logger.info(f"Updated rule: {rule_id}")
-        return SavedReconciliationRule(**rule_data)
+        return SavedReconciliationRule(**updated_rule)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update rule: {str(e)}")
@@ -338,18 +344,19 @@ async def update_rule(rule_id: str, request: UpdateRuleRequest):
 @router.post("/{rule_id}/use")
 async def mark_rule_as_used(rule_id: str):
     """Mark a rule as used (for analytics)"""
-    if rule_id not in rules_storage:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
     try:
-        rule_data = rules_storage[rule_id]
-        rule_data['usage_count'] = rule_data.get('usage_count', 0) + 1
-        rule_data['last_used_at'] = datetime.now().isoformat()
+        # Check if rule exists and mark as used
+        success = dynamodb_rules_service.mark_rule_as_used('reconciliation', rule_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Rule not found")
 
-        rules_storage[rule_id] = rule_data
+        # Get updated rule to return usage count
+        updated_rule = dynamodb_rules_service.get_rule('reconciliation', rule_id)
+        
+        return {"success": True, "usage_count": updated_rule['usage_count']}
 
-        return {"success": True, "usage_count": rule_data['usage_count']}
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error marking rule {rule_id} as used: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update rule usage: {str(e)}")
@@ -358,15 +365,22 @@ async def mark_rule_as_used(rule_id: str):
 @router.delete("/{rule_id}")
 async def delete_rule(rule_id: str):
     """Delete a rule"""
-    if rule_id not in rules_storage:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
     try:
-        deleted_rule = rules_storage.pop(rule_id)
-        logger.info(f"Deleted rule: {rule_id} - {deleted_rule.get('name')}")
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('reconciliation', rule_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
 
-        return {"success": True, "message": f"Rule '{deleted_rule.get('name')}' deleted successfully"}
+        # Delete from DynamoDB
+        success = dynamodb_rules_service.delete_rule('reconciliation', rule_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete rule from database")
 
+        logger.info(f"Deleted rule: {rule_id} - {existing_rule.get('name')}")
+        return {"success": True, "message": f"Rule '{existing_rule.get('name')}' deleted successfully"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete rule: {str(e)}")
@@ -376,38 +390,22 @@ async def delete_rule(rule_id: str):
 async def search_rules(filters: RuleSearchFilters):
     """Search rules with advanced filters"""
     try:
-        all_rules = list(rules_storage.values())
-        filtered_rules = all_rules
-
-        # Apply filters
+        # Convert RuleSearchFilters to dict for DynamoDB service
+        search_filters = {}
         if filters.category:
-            filtered_rules = [r for r in filtered_rules if r.get('category') == filters.category]
-
+            search_filters['category'] = filters.category
         if filters.template_id:
-            filtered_rules = [r for r in filtered_rules if r.get('template_id') == filters.template_id]
-
+            search_filters['template_id'] = filters.template_id
         if filters.tags:
-            filtered_rules = [
-                r for r in filtered_rules
-                if any(tag in r.get('tags', []) for tag in filters.tags)
-            ]
-
+            search_filters['tags'] = filters.tags
         if filters.name_contains:
-            search_term = filters.name_contains.lower()
-            filtered_rules = [
-                r for r in filtered_rules
-                if search_term in r.get('name', '').lower() or
-                   search_term in r.get('description', '').lower()
-            ]
+            search_filters['name_contains'] = filters.name_contains
 
-        # Sort by relevance (usage count and last used)
-        filtered_rules.sort(
-            key=lambda x: (x.get('usage_count', 0), x.get('last_used_at', '')),
-            reverse=True
-        )
+        # Use DynamoDB search functionality
+        rules = dynamodb_rules_service.search_rules('reconciliation', search_filters)
 
         # Convert to Pydantic models
-        result = [SavedReconciliationRule(**rule) for rule in filtered_rules]
+        result = [SavedReconciliationRule(**rule) for rule in rules]
 
         return result
 
@@ -420,19 +418,25 @@ async def search_rules(filters: RuleSearchFilters):
 async def list_categories():
     """Get all available rule categories"""
     try:
-        categories = list(set(rule.get('category', 'general') for rule in rules_storage.values()))
-        categories.sort()
+        # Get categories from existing rules in DynamoDB
+        used_categories = set(dynamodb_rules_service.get_categories('reconciliation'))
+
+        # Default categories
+        default_categories = [
+            "general",
+            "financial",
+            "trading",
+            "reconciliation",
+            "validation",
+            "custom"
+        ]
+
+        # Combine and sort
+        all_categories = sorted(list(set(default_categories + list(used_categories))))
 
         return {
-            "categories": categories,
-            "default_categories": [
-                "general",
-                "financial",
-                "trading",
-                "reconciliation",
-                "validation",
-                "custom"
-            ]
+            "categories": all_categories,
+            "default_categories": default_categories
         }
 
     except Exception as e:
@@ -454,22 +458,28 @@ async def save_transformation_rule(request: CreateRuleRequest):
         # Sanitize the rule config to remove file-specific references
         sanitized_config = sanitize_transformation_rule_config(request.rule_config)
 
-        saved_rule = SavedTransformationRule(
-            id=rule_id,
-            name=request.metadata.name,
-            description=request.metadata.description or "",
-            category=request.metadata.category or "transformation",
-            tags=request.metadata.tags or [],
-            template_id=request.metadata.template_id,
-            template_name=request.metadata.template_name,
-            created_at=timestamp,
-            updated_at=timestamp,
-            rule_config=sanitized_config,
-            usage_count=0
-        )
+        rule_data = {
+            "id": rule_id,
+            "name": request.metadata.name,
+            "description": request.metadata.description or "",
+            "category": request.metadata.category or "transformation",
+            "tags": request.metadata.tags or [],
+            "template_id": request.metadata.template_id,
+            "template_name": request.metadata.template_name,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "version": "1.0",
+            "rule_config": sanitized_config,
+            "usage_count": 0
+        }
 
-        transformation_rules_storage[rule_id] = saved_rule.dict()
+        # Save to DynamoDB
+        success = dynamodb_rules_service.save_rule('transformation', rule_data)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save transformation rule to database")
 
+        saved_rule = SavedTransformationRule(**rule_data)
+        
         logger.info(f"Saved new transformation rule: {rule_id} - {request.metadata.name}")
         return saved_rule
 
@@ -487,25 +497,17 @@ async def list_transformation_rules(
 ):
     """List saved transformation rules with optional filtering"""
     try:
-        all_rules = list(transformation_rules_storage.values())
-
-        # Apply filters
-        filtered_rules = all_rules
-
-        if category:
-            filtered_rules = [r for r in filtered_rules if r.get('category') == category]
-
-        if template_id:
-            filtered_rules = [r for r in filtered_rules if r.get('template_id') == template_id]
-
-        # Sort by last updated (most recent first)
-        filtered_rules.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
-
-        # Apply pagination
-        paginated_rules = filtered_rules[offset:offset + limit]
+        # Get rules from DynamoDB
+        rules = dynamodb_rules_service.list_rules(
+            'transformation',
+            category=category,
+            template_id=template_id,
+            limit=limit,
+            offset=offset
+        )
 
         # Convert to Pydantic models
-        result = [SavedTransformationRule(**rule) for rule in paginated_rules]
+        result = [SavedTransformationRule(**rule) for rule in rules]
 
         return result
 
@@ -518,13 +520,15 @@ async def list_transformation_rules(
 async def get_transformation_rules_by_template(template_id: str):
     """Get all transformation rules for a specific template"""
     try:
-        template_rules = [
-            SavedTransformationRule(**rule)
-            for rule in transformation_rules_storage.values()
-            if rule.get('template_id') == template_id
-        ]
+        # Get rules from DynamoDB by template
+        rules = dynamodb_rules_service.list_rules(
+            'transformation',
+            template_id=template_id,
+            limit=1000
+        )
 
-        # Sort by usage count and last used
+        # Convert to Pydantic models and sort by usage
+        template_rules = [SavedTransformationRule(**rule) for rule in rules]
         template_rules.sort(
             key=lambda x: (x.usage_count, x.last_used_at or ''),
             reverse=True
@@ -540,13 +544,15 @@ async def get_transformation_rules_by_template(template_id: str):
 @router.get("/transformation/{rule_id}", response_model=SavedTransformationRule)
 async def get_transformation_rule(rule_id: str):
     """Get a specific transformation rule by ID"""
-    if rule_id not in transformation_rules_storage:
-        raise HTTPException(status_code=404, detail="Transformation rule not found")
-
     try:
-        rule_data = transformation_rules_storage[rule_id]
+        rule_data = dynamodb_rules_service.get_rule('transformation', rule_id)
+        if not rule_data:
+            raise HTTPException(status_code=404, detail="Transformation rule not found")
+
         return SavedTransformationRule(**rule_data)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting transformation rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get transformation rule: {str(e)}")
@@ -555,37 +561,44 @@ async def get_transformation_rule(rule_id: str):
 @router.put("/transformation/{rule_id}", response_model=SavedTransformationRule)
 async def update_transformation_rule(rule_id: str, request: UpdateRuleRequest):
     """Update an existing transformation rule"""
-    if rule_id not in transformation_rules_storage:
-        raise HTTPException(status_code=404, detail="Transformation rule not found")
-
     try:
-        rule_data = transformation_rules_storage[rule_id].copy()
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('transformation', rule_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail="Transformation rule not found")
+
+        # Prepare updates
+        update_data = {}
 
         # Update metadata if provided
         if request.metadata:
             if request.metadata.name:
-                rule_data['name'] = request.metadata.name
+                update_data['name'] = request.metadata.name
             if request.metadata.description is not None:
-                rule_data['description'] = request.metadata.description
+                update_data['description'] = request.metadata.description
             if request.metadata.category:
-                rule_data['category'] = request.metadata.category
+                update_data['category'] = request.metadata.category
             if request.metadata.tags is not None:
-                rule_data['tags'] = request.metadata.tags
+                update_data['tags'] = request.metadata.tags
 
         # Update rule config if provided
         if request.rule_config:
             sanitized_config = sanitize_transformation_rule_config(request.rule_config)
-            rule_data['rule_config'] = sanitized_config
+            update_data['rule_config'] = sanitized_config
 
-        # Update timestamp
-        rule_data['updated_at'] = datetime.now().isoformat()
+        # Update in DynamoDB
+        success = dynamodb_rules_service.update_rule('transformation', rule_id, update_data)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update transformation rule in database")
 
-        # Save updated rule
-        transformation_rules_storage[rule_id] = rule_data
+        # Get updated rule
+        updated_rule = dynamodb_rules_service.get_rule('transformation', rule_id)
 
         logger.info(f"Updated transformation rule: {rule_id}")
-        return SavedTransformationRule(**rule_data)
+        return SavedTransformationRule(**updated_rule)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating transformation rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update transformation rule: {str(e)}")
@@ -594,18 +607,19 @@ async def update_transformation_rule(rule_id: str, request: UpdateRuleRequest):
 @router.post("/transformation/{rule_id}/use")
 async def mark_transformation_rule_as_used(rule_id: str):
     """Mark a transformation rule as used (for analytics)"""
-    if rule_id not in transformation_rules_storage:
-        raise HTTPException(status_code=404, detail="Transformation rule not found")
-
     try:
-        rule_data = transformation_rules_storage[rule_id]
-        rule_data['usage_count'] = rule_data.get('usage_count', 0) + 1
-        rule_data['last_used_at'] = datetime.now().isoformat()
+        # Check if rule exists and mark as used
+        success = dynamodb_rules_service.mark_rule_as_used('transformation', rule_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Transformation rule not found")
 
-        transformation_rules_storage[rule_id] = rule_data
+        # Get updated rule to return usage count
+        updated_rule = dynamodb_rules_service.get_rule('transformation', rule_id)
+        
+        return {"success": True, "usage_count": updated_rule['usage_count']}
 
-        return {"success": True, "usage_count": rule_data['usage_count']}
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error marking transformation rule {rule_id} as used: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to update transformation rule usage: {str(e)}")
@@ -614,15 +628,22 @@ async def mark_transformation_rule_as_used(rule_id: str):
 @router.delete("/transformation/{rule_id}")
 async def delete_transformation_rule(rule_id: str):
     """Delete a transformation rule"""
-    if rule_id not in transformation_rules_storage:
-        raise HTTPException(status_code=404, detail="Transformation rule not found")
-
     try:
-        deleted_rule = transformation_rules_storage.pop(rule_id)
-        logger.info(f"Deleted transformation rule: {rule_id} - {deleted_rule.get('name')}")
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('transformation', rule_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail="Transformation rule not found")
 
-        return {"success": True, "message": f"Transformation rule '{deleted_rule.get('name')}' deleted successfully"}
+        # Delete from DynamoDB
+        success = dynamodb_rules_service.delete_rule('transformation', rule_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete transformation rule from database")
 
+        logger.info(f"Deleted transformation rule: {rule_id} - {existing_rule.get('name')}")
+        return {"success": True, "message": f"Transformation rule '{existing_rule.get('name')}' deleted successfully"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting transformation rule {rule_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete transformation rule: {str(e)}")
@@ -632,38 +653,22 @@ async def delete_transformation_rule(rule_id: str):
 async def search_transformation_rules(filters: RuleSearchFilters):
     """Search transformation rules with advanced filters"""
     try:
-        all_rules = list(transformation_rules_storage.values())
-        filtered_rules = all_rules
-
-        # Apply filters
+        # Convert RuleSearchFilters to dict for DynamoDB service
+        search_filters = {}
         if filters.category:
-            filtered_rules = [r for r in filtered_rules if r.get('category') == filters.category]
-
+            search_filters['category'] = filters.category
         if filters.template_id:
-            filtered_rules = [r for r in filtered_rules if r.get('template_id') == filters.template_id]
-
+            search_filters['template_id'] = filters.template_id
         if filters.tags:
-            filtered_rules = [
-                r for r in filtered_rules
-                if any(tag in r.get('tags', []) for tag in filters.tags)
-            ]
-
+            search_filters['tags'] = filters.tags
         if filters.name_contains:
-            search_term = filters.name_contains.lower()
-            filtered_rules = [
-                r for r in filtered_rules
-                if search_term in r.get('name', '').lower() or
-                   search_term in r.get('description', '').lower()
-            ]
+            search_filters['name_contains'] = filters.name_contains
 
-        # Sort by relevance (usage count and last used)
-        filtered_rules.sort(
-            key=lambda x: (x.get('usage_count', 0), x.get('last_used_at', '')),
-            reverse=True
-        )
+        # Use DynamoDB search functionality
+        rules = dynamodb_rules_service.search_rules('transformation', search_filters)
 
         # Convert to Pydantic models
-        result = [SavedTransformationRule(**rule) for rule in filtered_rules]
+        result = [SavedTransformationRule(**rule) for rule in rules]
 
         return result
 
@@ -676,42 +681,54 @@ async def search_transformation_rules(filters: RuleSearchFilters):
 async def rule_management_health():
     """Health check for rule management service"""
     try:
-        total_rules = len(rules_storage)
-        total_transformation_rules = len(transformation_rules_storage)
-        categories = list(set(rule.get('category', 'general') for rule in rules_storage.values()))
-        transformation_categories = list(
-            set(rule.get('category', 'transformation') for rule in transformation_rules_storage.values()))
+        # Get health status from DynamoDB service
+        db_health = dynamodb_rules_service.get_health_status()
+        
+        # Get rule counts
+        reconciliation_rules = dynamodb_rules_service.list_rules('reconciliation', limit=10000)
+        transformation_rules = dynamodb_rules_service.list_rules('transformation', limit=10000)
+        
+        # Get categories
+        reconciliation_categories = dynamodb_rules_service.get_categories('reconciliation')
+        transformation_categories = dynamodb_rules_service.get_categories('transformation')
 
-        # Calculate some basic statistics
-        total_usage = sum(rule.get('usage_count', 0) for rule in rules_storage.values())
-        total_transformation_usage = sum(rule.get('usage_count', 0) for rule in transformation_rules_storage.values())
+        # Calculate usage statistics
+        total_reconciliation_usage = sum(rule.get('usage_count', 0) for rule in reconciliation_rules)
+        total_transformation_usage = sum(rule.get('usage_count', 0) for rule in transformation_rules)
 
         return {
-            "status": "healthy",
+            "status": "healthy" if db_health['status'] == 'healthy' else "unhealthy",
             "service": "rule_management",
             "reconciliation_rules": {
-                "total_rules": total_rules,
-                "total_categories": len(categories),
-                "total_usage": total_usage
+                "total_rules": len(reconciliation_rules),
+                "total_categories": len(reconciliation_categories),
+                "total_usage": total_reconciliation_usage
             },
             "transformation_rules": {
-                "total_rules": total_transformation_rules,
+                "total_rules": len(transformation_rules),
                 "total_categories": len(transformation_categories),
                 "total_usage": total_transformation_usage
             },
-            "storage_type": "in_memory",
+            "storage_type": "dynamodb",
+            "database_status": db_health,
             "features": [
                 "save_reconciliation_rules",
                 "load_reconciliation_rules",
-                "save_transformation_rules",
+                "save_transformation_rules", 
                 "load_transformation_rules",
                 "search_rules",
                 "template_based",
                 "usage_tracking",
-                "rule_versioning"
+                "rule_versioning",
+                "dynamodb_storage"
             ]
         }
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "service": "rule_management",
+            "error": str(e),
+            "storage_type": "dynamodb"
+        }

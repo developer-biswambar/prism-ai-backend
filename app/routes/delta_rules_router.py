@@ -1,5 +1,5 @@
-# Backend API endpoints for Delta Rule Management with In-Memory Storage
-# Add these endpoints to your FastAPI backend
+# Backend API endpoints for Delta Rule Management with DynamoDB Storage
+# Preserves exact same API contract while using DynamoDB backend
 
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -8,12 +8,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.utils.uuid_generator import generate_uuid
+from app.services.dynamodb_rules_service import dynamodb_rules_service
 
 # Router for delta rule management
 delta_rules_router = APIRouter(prefix="/delta-rules", tags=["delta-rules"])
-
-# In-Memory Storage
-delta_rules_storage = {}
 
 
 # Pydantic models for Delta Rules
@@ -62,9 +60,9 @@ class DeltaRuleResponse(BaseModel):
     rule_config: DeltaRuleConfig
 
 
-# Helper functions for in-memory storage
+# Helper functions for DynamoDB storage
 def create_delta_rule_record(rule_data: DeltaRuleCreate, rule_id: str = None) -> Dict:
-    """Create a delta rule record for in-memory storage"""
+    """Create a delta rule record for DynamoDB storage"""
     if rule_id is None:
         rule_id = generate_uuid('delta_rule')
 
@@ -77,42 +75,13 @@ def create_delta_rule_record(rule_data: DeltaRuleCreate, rule_id: str = None) ->
         "template_id": rule_data.metadata.template_id,
         "template_name": rule_data.metadata.template_name,
         "rule_type": rule_data.metadata.rule_type,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "version": "1.0",
         "usage_count": 0,
         "last_used_at": None,
         "rule_config": rule_data.rule_config.dict()
     }
-
-
-def filter_delta_rules(
-        rules: Dict[str, Dict],
-        category: Optional[str] = None,
-        template_id: Optional[str] = None,
-        search_term: Optional[str] = None
-) -> List[Dict]:
-    """Filter delta rules based on criteria"""
-    filtered_rules = []
-
-    for rule in rules.values():
-        # Category filter
-        if category and rule["category"] != category:
-            continue
-
-        # Template filter
-        if template_id and rule["template_id"] != template_id:
-            continue
-
-        # Search filter
-        if search_term:
-            search_lower = search_term.lower()
-            if (search_lower not in rule["name"].lower() and
-                    search_lower not in (rule["description"] or "").lower()):
-                continue
-
-        filtered_rules.append(rule)
-
-    return filtered_rules
 
 
 # API Endpoints
@@ -125,18 +94,26 @@ async def save_delta_rule(rule_data: DeltaRuleCreate):
         if not rule_data.metadata.name.strip():
             raise HTTPException(status_code=400, detail="Rule name is required")
 
-        # Check for duplicate names
-        for existing_rule in delta_rules_storage.values():
+        # Check for duplicate names by searching existing rules
+        existing_rules = dynamodb_rules_service.search_rules('delta', {'name_contains': rule_data.metadata.name})
+        for existing_rule in existing_rules:
             if existing_rule["name"] == rule_data.metadata.name:
                 raise HTTPException(status_code=400, detail="Rule name already exists")
 
         # Create the rule record
         rule_record = create_delta_rule_record(rule_data)
 
-        # Save to in-memory storage
-        delta_rules_storage[rule_record["id"]] = rule_record
+        # Save to DynamoDB
+        success = dynamodb_rules_service.save_rule('delta', rule_record)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save rule to database")
 
-        return DeltaRuleResponse(**rule_record)
+        # Convert datetime strings back to datetime objects for response
+        response_record = rule_record.copy()
+        response_record["created_at"] = datetime.fromisoformat(rule_record["created_at"])
+        response_record["updated_at"] = datetime.fromisoformat(rule_record["updated_at"])
+
+        return DeltaRuleResponse(**response_record)
 
     except HTTPException:
         raise
@@ -153,20 +130,26 @@ async def list_delta_rules(
 ):
     """List delta generation rules with optional filtering"""
     try:
-        # Filter rules
-        filtered_rules = filter_delta_rules(
-            delta_rules_storage,
+        # Get rules from DynamoDB
+        rules = dynamodb_rules_service.list_rules(
+            'delta',
             category=category,
-            template_id=template_id
+            template_id=template_id,
+            limit=limit,
+            offset=offset
         )
 
-        # Sort by updated_at (most recent first)
-        filtered_rules.sort(key=lambda x: x["updated_at"], reverse=True)
+        # Convert datetime strings to datetime objects for response
+        response_rules = []
+        for rule in rules:
+            response_rule = rule.copy()
+            response_rule["created_at"] = datetime.fromisoformat(rule["created_at"])
+            response_rule["updated_at"] = datetime.fromisoformat(rule["updated_at"])
+            if rule.get("last_used_at"):
+                response_rule["last_used_at"] = datetime.fromisoformat(rule["last_used_at"])
+            response_rules.append(DeltaRuleResponse(**response_rule))
 
-        # Apply pagination
-        paginated_rules = filtered_rules[offset:offset + limit]
-
-        return [DeltaRuleResponse(**rule) for rule in paginated_rules]
+        return response_rules
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list delta rules: {str(e)}")
@@ -176,15 +159,27 @@ async def list_delta_rules(
 async def get_delta_rules_by_template(template_id: str):
     """Get delta rules for a specific template"""
     try:
-        filtered_rules = filter_delta_rules(
-            delta_rules_storage,
-            template_id=template_id
+        # Get rules from DynamoDB using template filter
+        rules = dynamodb_rules_service.list_rules(
+            'delta',
+            template_id=template_id,
+            limit=1000  # Large limit for template queries
         )
 
-        # Sort by usage count (most used first)
-        filtered_rules.sort(key=lambda x: x["usage_count"], reverse=True)
+        # Sort by usage count (most used first) - DynamoDB returns sorted by recency
+        rules.sort(key=lambda x: x.get("usage_count", 0), reverse=True)
 
-        return [DeltaRuleResponse(**rule) for rule in filtered_rules]
+        # Convert datetime strings to datetime objects for response
+        response_rules = []
+        for rule in rules:
+            response_rule = rule.copy()
+            response_rule["created_at"] = datetime.fromisoformat(rule["created_at"])
+            response_rule["updated_at"] = datetime.fromisoformat(rule["updated_at"])
+            if rule.get("last_used_at"):
+                response_rule["last_used_at"] = datetime.fromisoformat(rule["last_used_at"])
+            response_rules.append(DeltaRuleResponse(**response_rule))
+
+        return response_rules
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get delta rules by template: {str(e)}")
@@ -194,11 +189,18 @@ async def get_delta_rules_by_template(template_id: str):
 async def get_delta_rule(rule_id: str):
     """Get a specific delta rule by ID"""
     try:
-        if rule_id not in delta_rules_storage:
+        rule = dynamodb_rules_service.get_rule('delta', rule_id)
+        if not rule:
             raise HTTPException(status_code=404, detail="Delta rule not found")
 
-        rule = delta_rules_storage[rule_id]
-        return DeltaRuleResponse(**rule)
+        # Convert datetime strings to datetime objects for response
+        response_rule = rule.copy()
+        response_rule["created_at"] = datetime.fromisoformat(rule["created_at"])
+        response_rule["updated_at"] = datetime.fromisoformat(rule["updated_at"])
+        if rule.get("last_used_at"):
+            response_rule["last_used_at"] = datetime.fromisoformat(rule["last_used_at"])
+
+        return DeltaRuleResponse(**response_rule)
 
     except HTTPException:
         raise
@@ -210,40 +212,56 @@ async def get_delta_rule(rule_id: str):
 async def update_delta_rule(rule_id: str, updates: DeltaRuleUpdate):
     """Update an existing delta rule"""
     try:
-        if rule_id not in delta_rules_storage:
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('delta', rule_id)
+        if not existing_rule:
             raise HTTPException(status_code=404, detail="Delta rule not found")
 
-        rule = delta_rules_storage[rule_id]
+        # Prepare updates
+        update_data = {}
 
         # Update metadata if provided
         if updates.metadata:
             # Check for duplicate names (excluding current rule)
-            if updates.metadata.name and updates.metadata.name != rule["name"]:
-                for other_id, other_rule in delta_rules_storage.items():
-                    if other_id != rule_id and other_rule["name"] == updates.metadata.name:
+            if updates.metadata.name and updates.metadata.name != existing_rule["name"]:
+                existing_rules = dynamodb_rules_service.search_rules('delta', {'name_contains': updates.metadata.name})
+                for other_rule in existing_rules:
+                    if other_rule["id"] != rule_id and other_rule["name"] == updates.metadata.name:
                         raise HTTPException(status_code=400, detail="Rule name already exists")
 
-            rule["name"] = updates.metadata.name or rule["name"]
-            rule["description"] = updates.metadata.description if updates.metadata.description is not None else rule[
-                "description"]
-            rule["category"] = updates.metadata.category or rule["category"]
-            rule["tags"] = updates.metadata.tags if updates.metadata.tags is not None else rule["tags"]
-            rule["template_id"] = updates.metadata.template_id if updates.metadata.template_id is not None else rule[
-                "template_id"]
-            rule["template_name"] = updates.metadata.template_name if updates.metadata.template_name is not None else \
-                rule["template_name"]
+            if updates.metadata.name:
+                update_data["name"] = updates.metadata.name
+            if updates.metadata.description is not None:
+                update_data["description"] = updates.metadata.description
+            if updates.metadata.category:
+                update_data["category"] = updates.metadata.category
+            if updates.metadata.tags is not None:
+                update_data["tags"] = updates.metadata.tags
+            if updates.metadata.template_id is not None:
+                update_data["template_id"] = updates.metadata.template_id
+            if updates.metadata.template_name is not None:
+                update_data["template_name"] = updates.metadata.template_name
 
         # Update rule config if provided
         if updates.rule_config:
-            rule["rule_config"] = updates.rule_config.dict()
+            update_data["rule_config"] = updates.rule_config.dict()
 
-        # Update timestamp
-        rule["updated_at"] = datetime.utcnow()
+        # Update in DynamoDB
+        success = dynamodb_rules_service.update_rule('delta', rule_id, update_data)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update rule in database")
 
-        # Save back to storage
-        delta_rules_storage[rule_id] = rule
+        # Get updated rule
+        updated_rule = dynamodb_rules_service.get_rule('delta', rule_id)
+        
+        # Convert datetime strings to datetime objects for response
+        response_rule = updated_rule.copy()
+        response_rule["created_at"] = datetime.fromisoformat(updated_rule["created_at"])
+        response_rule["updated_at"] = datetime.fromisoformat(updated_rule["updated_at"])
+        if updated_rule.get("last_used_at"):
+            response_rule["last_used_at"] = datetime.fromisoformat(updated_rule["last_used_at"])
 
-        return DeltaRuleResponse(**rule)
+        return DeltaRuleResponse(**response_rule)
 
     except HTTPException:
         raise
@@ -255,11 +273,15 @@ async def update_delta_rule(rule_id: str, updates: DeltaRuleUpdate):
 async def delete_delta_rule(rule_id: str):
     """Delete a delta rule"""
     try:
-        if rule_id not in delta_rules_storage:
+        # Check if rule exists
+        existing_rule = dynamodb_rules_service.get_rule('delta', rule_id)
+        if not existing_rule:
             raise HTTPException(status_code=404, detail="Delta rule not found")
 
-        # Remove from storage
-        del delta_rules_storage[rule_id]
+        # Delete from DynamoDB
+        success = dynamodb_rules_service.delete_rule('delta', rule_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete rule from database")
 
         return {"message": "Delta rule deleted successfully"}
 
@@ -273,17 +295,15 @@ async def delete_delta_rule(rule_id: str):
 async def mark_delta_rule_as_used(rule_id: str):
     """Mark a delta rule as used (increment usage count)"""
     try:
-        if rule_id not in delta_rules_storage:
+        # Check if rule exists and mark as used
+        success = dynamodb_rules_service.mark_rule_as_used('delta', rule_id)
+        if not success:
             raise HTTPException(status_code=404, detail="Delta rule not found")
 
-        rule = delta_rules_storage[rule_id]
-        rule["usage_count"] = rule["usage_count"] + 1
-        rule["last_used_at"] = datetime.utcnow()
-
-        # Save back to storage
-        delta_rules_storage[rule_id] = rule
-
-        return {"message": "Delta rule usage updated", "usage_count": rule["usage_count"]}
+        # Get updated rule to return usage count
+        updated_rule = dynamodb_rules_service.get_rule('delta', rule_id)
+        
+        return {"message": "Delta rule usage updated", "usage_count": updated_rule["usage_count"]}
 
     except HTTPException:
         raise
@@ -295,54 +315,20 @@ async def mark_delta_rule_as_used(rule_id: str):
 async def search_delta_rules(search_filters: Dict[str, Any]):
     """Search delta rules with complex filters"""
     try:
-        filtered_rules = []
+        # Use DynamoDB search functionality
+        rules = dynamodb_rules_service.search_rules('delta', search_filters)
 
-        for rule in delta_rules_storage.values():
-            include_rule = True
+        # Convert datetime strings to datetime objects for response
+        response_rules = []
+        for rule in rules:
+            response_rule = rule.copy()
+            response_rule["created_at"] = datetime.fromisoformat(rule["created_at"])
+            response_rule["updated_at"] = datetime.fromisoformat(rule["updated_at"])
+            if rule.get("last_used_at"):
+                response_rule["last_used_at"] = datetime.fromisoformat(rule["last_used_at"])
+            response_rules.append(DeltaRuleResponse(**response_rule))
 
-            # Name search
-            if search_filters.get("name"):
-                if search_filters["name"].lower() not in rule["name"].lower():
-                    include_rule = False
-
-            # Description search
-            if search_filters.get("description") and include_rule:
-                description = rule["description"] or ""
-                if search_filters["description"].lower() not in description.lower():
-                    include_rule = False
-
-            # Category filter
-            if search_filters.get("category") and include_rule:
-                if rule["category"] != search_filters["category"]:
-                    include_rule = False
-
-            # Tags filter
-            if search_filters.get("tags") and include_rule:
-                rule_tags = rule["tags"] or []
-                search_tags = search_filters["tags"]
-                if not any(tag in rule_tags for tag in search_tags):
-                    include_rule = False
-
-            # Template filter
-            if search_filters.get("template_id") and include_rule:
-                if rule["template_id"] != search_filters["template_id"]:
-                    include_rule = False
-
-            # Usage count filter
-            if search_filters.get("min_usage_count") and include_rule:
-                if rule["usage_count"] < search_filters["min_usage_count"]:
-                    include_rule = False
-
-            if include_rule:
-                filtered_rules.append(rule)
-
-        # Sort by relevance (usage count + recency)
-        filtered_rules.sort(
-            key=lambda x: (x["usage_count"], x["updated_at"]),
-            reverse=True
-        )
-
-        return [DeltaRuleResponse(**rule) for rule in filtered_rules]
+        return response_rules
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to search delta rules: {str(e)}")
@@ -352,10 +338,8 @@ async def search_delta_rules(search_filters: Dict[str, Any]):
 async def get_delta_rule_categories():
     """Get list of available delta rule categories"""
     try:
-        # Get categories from existing rules
-        used_categories = set()
-        for rule in delta_rules_storage.values():
-            used_categories.add(rule["category"])
+        # Get categories from existing rules in DynamoDB
+        used_categories = set(dynamodb_rules_service.get_categories('delta'))
 
         # Default categories
         default_categories = [
@@ -387,15 +371,9 @@ async def get_delta_rule_categories():
 async def bulk_delete_delta_rules(rule_ids: List[str]):
     """Delete multiple delta rules at once"""
     try:
-        deleted_count = 0
-        not_found_ids = []
-
-        for rule_id in rule_ids:
-            if rule_id in delta_rules_storage:
-                del delta_rules_storage[rule_id]
-                deleted_count += 1
-            else:
-                not_found_ids.append(rule_id)
+        result = dynamodb_rules_service.bulk_delete_rules('delta', rule_ids)
+        deleted_count = result['deleted_count']
+        not_found_ids = result['not_found_ids']
 
         return {
             "message": f"Deleted {deleted_count} delta rules",
@@ -411,11 +389,11 @@ async def bulk_delete_delta_rules(rule_ids: List[str]):
 async def export_delta_rules(category: Optional[str] = None):
     """Export delta rules as JSON"""
     try:
-        rules_to_export = []
-
-        for rule in delta_rules_storage.values():
-            if category is None or rule["category"] == category:
-                rules_to_export.append(rule)
+        # Get rules from DynamoDB
+        if category:
+            rules_to_export = dynamodb_rules_service.list_rules('delta', category=category, limit=10000)
+        else:
+            rules_to_export = dynamodb_rules_service.list_rules('delta', limit=10000)
 
         export_data = {
             "version": "1.0",
@@ -451,16 +429,21 @@ async def import_delta_rules(import_data: Dict[str, Any]):
                 if "name" in rule_data:
                     rule_data["name"] = f"{rule_data['name']} (Imported)"
 
-                # Reset usage stats
+                # Reset usage stats and timestamps
                 rule_data["usage_count"] = 0
                 rule_data["last_used_at"] = None
-                rule_data["created_at"] = datetime.utcnow()
-                rule_data["updated_at"] = datetime.utcnow()
+                rule_data["created_at"] = datetime.utcnow().isoformat()
+                rule_data["updated_at"] = datetime.utcnow().isoformat()
                 rule_data["id"] = new_id
+                rule_data["version"] = "1.0"
 
-                # Save to storage
-                delta_rules_storage[new_id] = rule_data
-                imported_count += 1
+                # Save to DynamoDB
+                success = dynamodb_rules_service.save_rule('delta', rule_data)
+                if success:
+                    imported_count += 1
+                else:
+                    failed_count += 1
+                    errors.append(f"Rule '{rule_data.get('name', 'Unknown')}': Failed to save to database")
 
             except Exception as rule_error:
                 failed_count += 1
@@ -489,12 +472,17 @@ async def clear_delta_rules(confirm: bool = False):
                 detail="Must set confirm=true to clear all delta rules"
             )
 
-        rule_count = len(delta_rules_storage)
-        delta_rules_storage.clear()
+        # Get all delta rules
+        all_rules = dynamodb_rules_service.list_rules('delta', limit=10000)
+        rule_ids = [rule['id'] for rule in all_rules]
+        
+        # Bulk delete all rules
+        result = dynamodb_rules_service.bulk_delete_rules('delta', rule_ids)
+        cleared_count = result['deleted_count']
 
         return {
-            "message": f"Cleared {rule_count} delta rules",
-            "cleared_count": rule_count
+            "message": f"Cleared {cleared_count} delta rules",
+            "cleared_count": cleared_count
         }
 
     except HTTPException:
@@ -507,11 +495,17 @@ async def clear_delta_rules(confirm: bool = False):
 async def get_delta_rule_management_health():
     """Health check for delta rule management system"""
     try:
-        rule_count = len(delta_rules_storage.values())
+        # Get health status from DynamoDB service
+        db_health = dynamodb_rules_service.get_health_status()
+        
+        # Get rule count
+        rules = dynamodb_rules_service.list_rules('delta', limit=10000)
+        rule_count = len(rules)
 
         return {
-            "status": "healthy",
+            "status": "healthy" if db_health['status'] == 'healthy' else "unhealthy",
             "total_rules": rule_count,
+            "database_status": db_health,
             "timestamp": datetime.utcnow()
         }
 
