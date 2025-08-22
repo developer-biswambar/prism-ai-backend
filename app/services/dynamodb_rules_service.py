@@ -1,27 +1,20 @@
-# DynamoDB Rules Service - Single Table Design for Delta Rules and Rule Management
+# DynamoDB Rules Service - Simplified Schema for Delta Rules and Rule Management
 """
-DynamoDB integration for storing delta rules and reconciliation rules in a single table.
+DynamoDB integration for storing delta rules and reconciliation rules using simplified schema.
 
 Table Structure:
-- Single table design with partition key (PK) and sort key (SK)
-- Uses DynamoDB best practices for data modeling
+- Simplified single table design with only primary keys (PK and SK)
+- Uses full table scans for queries (no GSI indexes)
+- Optimized for cost and schema flexibility over query performance
 - Supports both delta rules and reconciliation/transformation rules
 
 Table Name: Rules (configurable via environment variable)
 
-Key Design:
+Key Design (Simplified):
 - PK: Rule type identifier (DELTA_RULE#, RECONCILIATION_RULE#, TRANSFORMATION_RULE#)  
 - SK: Rule ID (unique identifier for each rule)
 
-GSI1 (Global Secondary Index 1) - For template-based queries:
-- GSI1PK: template_id
-- GSI1SK: updated_at (for sorting by recency)
-
-GSI2 (Global Secondary Index 2) - For category-based queries:
-- GSI2PK: category
-- GSI2SK: usage_count#updated_at (for sorting by popularity and recency)
-
-Attributes:
+Core Attributes:
 - id: Rule unique identifier
 - rule_type: "delta", "reconciliation", "transformation"
 - name: Rule display name
@@ -41,18 +34,19 @@ Example Items:
 1. Delta Rule:
    PK: "DELTA_RULE#delta_rule_123"
    SK: "delta_rule_123"
-   GSI1PK: "template_xyz" (if template_id exists)
-   GSI1SK: "2024-01-15T10:30:00Z"
-   GSI2PK: "delta"
-   GSI2SK: "00000005#2024-01-15T10:30:00Z"
+   rule_type: "delta"
+   name: "Monthly Delta Analysis"
+   category: "financial"
 
 2. Reconciliation Rule:
    PK: "RECONCILIATION_RULE#rule_456"
    SK: "rule_456"
-   GSI1PK: "template_abc"
-   GSI1SK: "2024-01-14T15:20:00Z"
-   GSI2PK: "financial"
-   GSI2SK: "00000012#2024-01-14T15:20:00Z"
+   rule_type: "reconciliation"
+   name: "Transaction Matching"
+   category: "financial"
+
+Query Strategy: All operations use table scans with filters for maximum flexibility.
+Performance: Optimized for small to medium datasets (<10k rules) with cost efficiency.
 """
 
 import json
@@ -91,11 +85,6 @@ class DynamoDBRulesService:
         rule_type_key = type_mapping.get(rule_type, 'UNKNOWN_RULE')
         return f"{rule_type_key}#"
     
-    def _format_gsi2_sk(self, usage_count: int, updated_at: str) -> str:
-        """Format GSI2 sort key for usage_count#updated_at sorting"""
-        # Pad usage_count to 8 digits for proper lexicographic sorting
-        return f"{usage_count:08d}#{updated_at}"
-    
     def _convert_floats_to_decimal(self, obj: Any) -> Any:
         """Convert float values to Decimal for DynamoDB compatibility"""
         if isinstance(obj, float):
@@ -117,28 +106,16 @@ class DynamoDBRulesService:
         return obj
     
     def save_rule(self, rule_type: str, rule_data: Dict[str, Any]) -> bool:
-        """Save a rule to DynamoDB"""
+        """Save a rule to DynamoDB - simplified with only primary keys"""
         try:
             rule_id = rule_data['id']
-            updated_at = rule_data.get('updated_at', datetime.utcnow().isoformat())
-            usage_count = rule_data.get('usage_count', 0)
-            category = rule_data.get('category', 'general')
-            template_id = rule_data.get('template_id')
             
-            # Prepare item for DynamoDB
+            # Prepare minimal item for DynamoDB with only primary keys
             item = {
                 'PK': f"{self._get_partition_key(rule_type)}{rule_id}",
                 'SK': rule_id,
-                'GSI2PK': category,
-                'GSI2SK': self._format_gsi2_sk(usage_count, updated_at),
-                'rule_type': rule_type,
                 **self._convert_floats_to_decimal(rule_data)
             }
-            
-            # Add GSI1 keys if template_id exists
-            if template_id:
-                item['GSI1PK'] = template_id
-                item['GSI1SK'] = updated_at
             
             # Convert tags to StringSet if present
             if 'tags' in item and isinstance(item['tags'], list):
@@ -172,7 +149,7 @@ class DynamoDBRulesService:
             item = response['Item']
             
             # Remove DynamoDB-specific keys
-            for key in ['PK', 'SK', 'GSI1PK', 'GSI1SK', 'GSI2PK', 'GSI2SK']:
+            for key in ['PK', 'SK']:
                 item.pop(key, None)
             
             # Convert tags from StringSet to list
@@ -191,56 +168,35 @@ class DynamoDBRulesService:
     def list_rules(self, rule_type: str, category: Optional[str] = None, 
                   template_id: Optional[str] = None, limit: int = 50, 
                   offset: int = 0) -> List[Dict[str, Any]]:
-        """List rules with optional filtering"""
+        """List rules with optional filtering - simplified with full scan"""
         try:
-            rules = []
+            # Always scan for rules of this type
+            filter_expression = 'rule_type = :rule_type'
+            expression_values = {':rule_type': rule_type}
+            
+            # Add additional filters if specified
+            if category:
+                filter_expression += ' AND category = :category'
+                expression_values[':category'] = category
             
             if template_id:
-                # Query by template using GSI1
-                response = self.table.query(
-                    IndexName='GSI1',
-                    KeyConditionExpression='GSI1PK = :template_id',
-                    FilterExpression='rule_type = :rule_type',
-                    ExpressionAttributeValues={
-                        ':template_id': template_id,
-                        ':rule_type': rule_type
-                    },
-                    ScanIndexForward=False  # Most recent first
-                )
-                rules = response.get('Items', [])
+                filter_expression += ' AND template_id = :template_id'
+                expression_values[':template_id'] = template_id
+            
+            response = self.table.scan(
+                FilterExpression=filter_expression,
+                ExpressionAttributeValues=expression_values
+            )
+            rules = response.get('Items', [])
                 
-            elif category:
-                # Query by category using GSI2
-                response = self.table.query(
-                    IndexName='GSI2',
-                    KeyConditionExpression='GSI2PK = :category',
-                    FilterExpression='rule_type = :rule_type',
-                    ExpressionAttributeValues={
-                        ':category': category,
-                        ':rule_type': rule_type
-                    },
-                    ScanIndexForward=False  # Most used/recent first
-                )
-                rules = response.get('Items', [])
-                
-            else:
-                # Scan for all rules of this type
-                response = self.table.scan(
-                    FilterExpression='rule_type = :rule_type',
-                    ExpressionAttributeValues={
-                        ':rule_type': rule_type
-                    }
-                )
-                rules = response.get('Items', [])
-                
-                # Sort by updated_at desc
-                rules.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
+            # Sort by updated_at desc
+            rules.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
             
             # Process results
             processed_rules = []
             for item in rules:
                 # Remove DynamoDB-specific keys
-                for key in ['PK', 'SK', 'GSI1PK', 'GSI1SK', 'GSI2PK', 'GSI2SK']:
+                for key in ['PK', 'SK']:
                     item.pop(key, None)
                 
                 # Convert tags from StringSet to list
@@ -346,7 +302,7 @@ class DynamoDBRulesService:
                 
                 if include_rule:
                     # Remove DynamoDB-specific keys
-                    for key in ['PK', 'SK', 'GSI1PK', 'GSI1SK', 'GSI2PK', 'GSI2SK']:
+                    for key in ['PK', 'SK']:
                         item.pop(key, None)
                     filtered_rules.append(item)
             

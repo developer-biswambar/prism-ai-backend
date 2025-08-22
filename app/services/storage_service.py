@@ -342,7 +342,7 @@ class S3StorageService:
 def create_storage_service() -> S3StorageService:
     """Factory function to create S3 storage service based on configuration"""
     
-    bucket_name = os.getenv('S3_BUCKET_NAME')
+    bucket_name = os.getenv('S3_BUCKET_NAME','test')
     if not bucket_name:
         raise RuntimeError("S3_BUCKET_NAME environment variable is required. Please set S3_BUCKET_NAME.")
     

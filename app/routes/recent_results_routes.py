@@ -73,17 +73,26 @@ async def get_recent_results(limit: int = 5):
             from app.services.reconciliation_service import optimized_reconciliation_storage
 
             for recon_id, recon_results in optimized_reconciliation_storage.storage.items():
-                # Get file information
+                # Get file information using new storage service
                 file_a_name = "Unknown File A"
                 file_b_name = "Unknown File B"
 
                 try:
                     from app.services.storage_service import uploaded_files
-                    files = list(uploaded_files.values())
-                    if len(files) >= 2:
-                        file_a_name = files[0]["info"].get("custom_name") or files[0]["info"]["filename"]
-                        file_b_name = files[1]["info"].get("custom_name") or files[1]["info"]["filename"]
-                except:
+                    # Get file list using new storage service methods
+                    if uploaded_files.count() >= 2:
+                        file_list = list(uploaded_files.list_files())
+                        if len(file_list) >= 2:
+                            # Get file info using new methods
+                            file_a_info = uploaded_files.get_file_info(file_list[0])
+                            file_b_info = uploaded_files.get_file_info(file_list[1])
+                            
+                            if file_a_info:
+                                file_a_name = file_a_info.get("custom_name") or file_a_info.get("filename", "Unknown File A")
+                            if file_b_info:
+                                file_b_name = file_b_info.get("custom_name") or file_b_info.get("filename", "Unknown File B")
+                except Exception as e:
+                    logger.warning(f"Error getting file info for reconciliation {recon_id}: {e}")
                     pass
 
                 row_counts = recon_results.get("row_counts", {})
@@ -116,38 +125,56 @@ async def get_recent_results(limit: int = 5):
         except Exception as e:
             logger.error(f"Error retrieving reconciliation results: {e}")
 
-        # Get File Generation results
+        # Get File Generation/Transformation results
         try:
             from app.services.transformation_service import transformation_storage
 
             for file_transformation in transformation_storage.storage.items():
                 try:
-
                     transformation_id = file_transformation[0]
-
                     transformation_details = file_transformation[1]
 
-                    print(file_transformation)
-                    file_ids = [
-                        file_info['file_id']
-                        for file_info in transformation_details['results']['config'].get('source_files', [])
-                    ]
+                    # Get source file info using new storage service
+                    file_ids = []
+                    file_names = []
+                    
+                    source_files_config = transformation_details.get('results', {}).get('config', {}).get('source_files', [])
+                    
+                    for file_info in source_files_config:
+                        file_id = file_info.get('file_id', '')
+                        file_ids.append(file_id)
+                        
+                        # Get actual file name using new storage service
+                        try:
+                            from app.services.storage_service import uploaded_files
+                            if uploaded_files.exists(file_id):
+                                file_metadata = uploaded_files.get_file_info(file_id)
+                                if file_metadata:
+                                    file_name = file_metadata.get("custom_name") or file_metadata.get("filename", file_id)
+                                    file_names.append(file_name)
+                                else:
+                                    file_names.append(file_id)
+                            else:
+                                file_names.append(file_id)
+                        except Exception as file_error:
+                            logger.warning(f"Error getting file info for {file_id}: {file_error}")
+                            file_names.append(file_id)
 
                     recent_results.append(RecentResultInfo(
                         id=transformation_id,
                         process_type="file-transformation",
                         status="completed",
                         created_at=transformation_details['timestamp'].isoformat(),
-                        file_a=file_ids[0],
-                        file_b=file_ids[1] if len(file_ids) > 1 else '',
+                        file_a=file_names[0] if file_names else (file_ids[0] if file_ids else "Unknown"),
+                        file_b=file_names[1] if len(file_names) > 1 else (file_ids[1] if len(file_ids) > 1 else ''),
                         summary={
-                            "input_records": transformation_details['results']['processing_info']['input_row_count'],
-                            'output_records': transformation_details['results']['processing_info']['output_row_count'],
+                            "input_records": transformation_details.get('results', {}).get('processing_info', {}).get('input_row_count', 0),
+                            'output_records': transformation_details.get('results', {}).get('processing_info', {}).get('output_row_count', 0),
                             'columns_generated': 'Unknown',
-                            'configuration': transformation_details['results']['config'],
-                            'processing_info': transformation_details['results']['processing_info']
+                            'configuration': transformation_details.get('results', {}).get('config', {}),
+                            'processing_info': transformation_details.get('results', {}).get('processing_info', {})
                         },
-                        processing_time_seconds=transformation_details['results']['processing_info']['processing_time']
+                        processing_time_seconds=transformation_details.get('results', {}).get('processing_info', {}).get('processing_time', None)
                     ))
 
                 except Exception as gen_error:
