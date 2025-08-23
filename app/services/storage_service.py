@@ -12,6 +12,8 @@ import gzip
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+from dotenv import load_dotenv
+load_dotenv()
 
 # S3 imports - required for this service
 try:
@@ -40,10 +42,31 @@ class S3StorageService:
         
         # Initialize S3 client
         try:
-            if region:
-                self.s3_client = boto3.client('s3', region_name=region)
+            # Check for local development environment
+            use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
+            
+            if use_local_s3:
+                # Configure for local S3 (LocalStack or MinIO)
+                local_endpoint = os.getenv('LOCAL_S3_ENDPOINT', 'http://localhost:4566')
+                logger.info(f"Using local S3 endpoint: {local_endpoint}")
+                
+                self.s3_client = boto3.client(
+                    's3',
+                    endpoint_url=local_endpoint,
+                    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID', 'test'),
+                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY', 'test'),
+                    region_name=region or 'us-east-1'
+                )
             else:
-                self.s3_client = boto3.client('s3')
+                # Production AWS S3 - validate region first
+                effective_region = region or os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+                
+                # Validate region format
+                if not effective_region or ':' in effective_region:
+                    logger.warning(f"Invalid region format detected: '{effective_region}'. Using us-east-1 as fallback.")
+                    effective_region = 'us-east-1'
+                
+                self.s3_client = boto3.client('s3', region_name=effective_region)
                 
             # Test connection
             self._test_connection()
@@ -61,11 +84,30 @@ class S3StorageService:
         except ClientError as e:
             error_code = e.response['Error']['Code']
             if error_code == '404':
+                # For local development, try to create the bucket
+                use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
+                if use_local_s3:
+                    try:
+                        logger.info(f"Creating local S3 bucket: {self.bucket_name}")
+                        self.s3_client.create_bucket(Bucket=self.bucket_name)
+                        logger.info(f"Local S3 bucket '{self.bucket_name}' created successfully")
+                        return
+                    except Exception as create_error:
+                        logger.error(f"Failed to create local S3 bucket: {create_error}")
                 raise RuntimeError(f"S3 bucket '{self.bucket_name}' not found")
             elif error_code == '403':
                 raise RuntimeError(f"Access denied to S3 bucket '{self.bucket_name}'")
             else:
                 raise RuntimeError(f"S3 bucket access error: {e}")
+        except Exception as e:
+            # Handle connection errors for local development
+            use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
+            if use_local_s3:
+                local_endpoint = os.getenv('LOCAL_S3_ENDPOINT', 'http://localhost:4566')
+                raise RuntimeError(f"Cannot connect to local S3 endpoint '{local_endpoint}'. "
+                                 f"Make sure LocalStack is running: docker run --rm -d -p 4566:4566 localstack/localstack")
+            else:
+                raise RuntimeError(f"S3 connection failed: {e}")
     
     def _get_s3_key(self, key: str) -> str:
         """Convert storage key to S3 object key"""

@@ -45,6 +45,57 @@ print(f"📊 Batch Size: {BATCH_SIZE}")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting Optimized File Processing API with AI Regex Generation")
+    temp_dir = os.getenv("TEMP_DIR", "./temp")
+    # Ensure we use an absolute path that's writable
+    if not os.path.isabs(temp_dir):
+        temp_dir = os.path.abspath(temp_dir)
+    max_file_size = int(os.getenv("MAX_FILE_SIZE", "100"))
+
+    logger.info(f"Temp directory: {temp_dir}")
+    logger.info(f"Max file size: {max_file_size}MB")
+    logger.info("Optimized for large datasets (50k-100k records)")
+    logger.info("AI Regex Generation: ✅ Enabled")
+
+    # Initialize global thread pool
+    from app.utils.global_thread_pool import get_global_thread_pool
+    thread_pool_manager = get_global_thread_pool()
+    logger.info("Global thread pool manager initialized")
+
+    # Ensure temp directory exists
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # Startup messages
+    print("🚀 Optimized Financial Data Extraction, Analysis & Reconciliation API Started")
+    print(f"📊 Storage initialized: {len(uploaded_files.list())} files, {len(extractions.list())} extractions")
+    print(f"🤖 OpenAI: {'✅ Configured' if (OPENAI_API_KEY and OPENAI_API_KEY != 'sk-placeholder') else '❌ Not configured'}")
+    print("⚡ High-Performance Features: ✅ Enabled")
+    print("   • Hash-based matching for large datasets")
+    print("   • Vectorized pattern extraction")
+    print("   • Optimized memory management")
+    print("   • Streaming downloads")
+    print("   • Column selection support")
+    print("   • Paginated result retrieval")
+    print("   • AI-powered regex generation")
+    print("🔧 Optimized for: 50k-100k record datasets")
+    print(f"📋 API Docs: {API_DOCS_URL}")
+
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Optimized File Processing API")
+    
+    # Gracefully shutdown thread pools
+    from app.utils.global_thread_pool import shutdown_global_pools
+    logger.info("Shutting down global thread pools...")
+    shutdown_global_pools(wait=True, timeout=30.0)
+    logger.info("Global thread pools shutdown completed")
+
+
 # Create FastAPI app with comprehensive OpenAPI documentation
 app = FastAPI(
     lifespan=lifespan,
@@ -149,43 +200,11 @@ Configured for high-throughput financial data processing. Adjust based on your i
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins="*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting Optimized File Processing API with AI Regex Generation")
-    temp_dir = os.getenv("TEMP_DIR", "./temp")
-    max_file_size = int(os.getenv("MAX_FILE_SIZE", "100"))
-
-    logger.info(f"Temp directory: {temp_dir}")
-    logger.info(f"Max file size: {max_file_size}MB")
-    logger.info("Optimized for large datasets (50k-100k records)")
-    logger.info("AI Regex Generation: ✅ Enabled")
-
-    # Initialize global thread pool
-    from app.utils.global_thread_pool import get_global_thread_pool
-    thread_pool_manager = get_global_thread_pool()
-    logger.info("Global thread pool manager initialized")
-
-    # Ensure temp directory exists
-    os.makedirs(temp_dir, exist_ok=True)
-
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Optimized File Processing API")
-    
-    # Gracefully shutdown thread pools
-    from app.utils.global_thread_pool import shutdown_global_pools
-    logger.info("Shutting down global thread pools...")
-    shutdown_global_pools(wait=True, timeout=30.0)
-    logger.info("Global thread pools shutdown completed")
 
 
 # Custom exception handler for large file processing
@@ -253,10 +272,10 @@ async def debug_status():
         "success": True,
         "message": "Optimized system debug info with AI regex generation",
         "data": {
-            "uploaded_files_count": len(uploaded_files),
-            "extractions_count": len(extractions),
-            "comparisons_count": len(comparisons),
-            "reconciliations_count": len(reconciliations),
+            "uploaded_files_count": len(uploaded_files.list()),
+            "extractions_count": len(extractions.list()),
+            "comparisons_count": len(comparisons.list()),
+            "reconciliations_count": len(reconciliations.list()),
             "optimized_reconciliations_count": len(optimized_reconciliation_storage.storage),
             "openai_configured": bool(OPENAI_API_KEY and OPENAI_API_KEY != "sk-placeholder"),
             "current_batch_size": BATCH_SIZE,
@@ -284,7 +303,7 @@ async def debug_status():
                     "columns": len(ext_data.get("column_rules", [])),
                     "created": ext_data.get("created_at", "")[:19]
                 }
-                for ext_id, ext_data in list(extractions.items())[-5:]
+                for ext_id in list(extractions.list())[-5:] if (ext_data := extractions.get_metadata_only(ext_id))
             ],
             "recent_reconciliations": [
                 {
@@ -320,7 +339,6 @@ from app.routes.recent_results_routes import router as recent_results_router
 from app.routes.rule_management_routes import router as rule_management_router
 from app.routes.delta_rules_router import delta_rules_router
 from app.routes.transformation_routes import router as transformation_router
-from app.routes.ai_assistance import router as ai_assistance_router
 
 app.include_router(health_routes)
 app.include_router(reconciliation_router)
@@ -338,7 +356,6 @@ app.include_router(rule_management_router)
 app.include_router(delta_rules_router)
 
 app.include_router(transformation_router)
-app.include_router(ai_assistance_router)
 print("✅ All routes loaded successfully (optimized reconciliation + AI regex generation enabled)")
 
 
@@ -373,22 +390,6 @@ async def get_performance_metrics():
     }
 
 
-@app.on_event("startup")
-async def startup_event():
-    print("🚀 Optimized Financial Data Extraction, Analysis & Reconciliation API Started")
-    print(f"📊 Storage initialized: {len(uploaded_files)} files, {len(extractions)} extractions")
-    print(
-        f"🤖 OpenAI: {'✅ Configured' if (OPENAI_API_KEY and OPENAI_API_KEY != 'sk-placeholder') else '❌ Not configured'}")
-    print("⚡ High-Performance Features: ✅ Enabled")
-    print("   • Hash-based matching for large datasets")
-    print("   • Vectorized pattern extraction")
-    print("   • Optimized memory management")
-    print("   • Streaming downloads")
-    print("   • Column selection support")
-    print("   • Paginated result retrieval")
-    print("   • AI-powered regex generation")  # NEW feature
-    print("🔧 Optimized for: 50k-100k record datasets")
-    print(f"📋 API Docs: {API_DOCS_URL}")
 
 
 if __name__ == "__main__":

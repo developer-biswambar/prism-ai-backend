@@ -51,7 +51,7 @@ async def get_recent_results(limit: int = 5):
                     id=delta_id,
                     process_type="delta",
                     status="completed",
-                    created_at=delta_data["timestamp"].isoformat(),
+                    created_at=delta_data["timestamp"].isoformat() if hasattr(delta_data["timestamp"], 'isoformat') else str(delta_data["timestamp"]),
                     file_a=delta_data['file_a'],
                     file_b=delta_data['file_b'],
                     summary={
@@ -78,7 +78,7 @@ async def get_recent_results(limit: int = 5):
             # we need to look for files with reconciliation prefixes
             recon_file_ids = []
             try:
-                for file_id in uploaded_files.list_files():
+                for file_id in uploaded_files.list():
                     if file_id.startswith('recon_') and ('_metadata' in file_id or '_matched' in file_id):
                         # Extract reconciliation ID from file names like "recon_123_metadata" or "recon_123_matched"
                         if '_metadata' in file_id:
@@ -106,18 +106,17 @@ async def get_recent_results(limit: int = 5):
                     file_b_name = "Unknown File B"
 
                     try:
-                        # Get file list using new storage service methods
-                        if uploaded_files.count() >= 2:
-                            file_list = list(uploaded_files.list_files())
-                            if len(file_list) >= 2:
-                                # Get file info using new methods
-                                file_a_info = uploaded_files.get_file_info(file_list[0])
-                                file_b_info = uploaded_files.get_file_info(file_list[1])
+                        # Get file list using storage service methods
+                        file_list = uploaded_files.list()
+                        if len(file_list) >= 2:
+                            # Get file info using metadata methods
+                            file_a_info = uploaded_files.get_metadata_only(file_list[0])
+                            file_b_info = uploaded_files.get_metadata_only(file_list[1])
                                 
-                                if file_a_info:
-                                    file_a_name = file_a_info.get("custom_name") or file_a_info.get("filename", "Unknown File A")
-                                if file_b_info:
-                                    file_b_name = file_b_info.get("custom_name") or file_b_info.get("filename", "Unknown File B")
+                            if file_a_info:
+                                file_a_name = file_a_info.get("custom_name") or file_a_info.get("filename", "Unknown File A")
+                            if file_b_info:
+                                file_b_name = file_b_info.get("custom_name") or file_b_info.get("filename", "Unknown File B")
                     except Exception as e:
                         logger.warning(f"Error getting file info for reconciliation {recon_id}: {e}")
 
@@ -132,7 +131,7 @@ async def get_recent_results(limit: int = 5):
                         id=recon_id,
                         process_type="reconciliation",
                         status="completed",
-                        created_at=recon_metadata.get("timestamp", datetime.now()).isoformat(),
+                        created_at=recon_metadata.get("timestamp", datetime.now()).isoformat() if hasattr(recon_metadata.get("timestamp", datetime.now()), 'isoformat') else str(recon_metadata.get("timestamp", datetime.now())),
                         file_a=file_a_name,
                         file_b=file_b_name,
                         summary={
@@ -180,11 +179,11 @@ async def get_recent_results(limit: int = 5):
                         file_id = file_info.get('file_id', '')
                         file_ids.append(file_id)
                         
-                        # Get actual file name using new storage service
+                        # Get actual file name using storage service
                         try:
                             from app.services.storage_service import uploaded_files
                             if uploaded_files.exists(file_id):
-                                file_metadata = uploaded_files.get_file_info(file_id)
+                                file_metadata = uploaded_files.get_metadata_only(file_id)
                                 if file_metadata:
                                     file_name = file_metadata.get("custom_name") or file_metadata.get("filename", file_id)
                                     file_names.append(file_name)
@@ -200,7 +199,7 @@ async def get_recent_results(limit: int = 5):
                         id=transformation_id,
                         process_type="file-transformation",
                         status="completed",
-                        created_at=transformation_details['timestamp'].isoformat(),
+                        created_at=transformation_details['timestamp'].isoformat() if hasattr(transformation_details['timestamp'], 'isoformat') else str(transformation_details['timestamp']),
                         file_a=file_names[0] if file_names else (file_ids[0] if file_ids else "Unknown"),
                         file_b=file_names[1] if len(file_names) > 1 else (file_ids[1] if len(file_ids) > 1 else ''),
                         summary={
@@ -277,7 +276,7 @@ async def get_delta_result_summary(delta_id: str):
             "delta_id": delta_id,
             "process_type": "delta",
             "status": "completed",
-            "timestamp": delta_data["timestamp"].isoformat(),
+            "timestamp": delta_data["timestamp"].isoformat() if hasattr(delta_data["timestamp"], 'isoformat') else str(delta_data["timestamp"]),
             "summary": {
                 "unchanged_records": row_counts["unchanged"],
                 "amended_records": row_counts["amended"],
@@ -317,7 +316,7 @@ async def get_reconciliation_result_summary(recon_id: str):
             "reconciliation_id": recon_id,
             "process_type": "reconciliation",
             "status": "completed",
-            "timestamp": recon_results["timestamp"].isoformat(),
+            "timestamp": recon_results["timestamp"].isoformat() if hasattr(recon_results["timestamp"], 'isoformat') else str(recon_results["timestamp"]),
             "summary": {
                 "matched_records": row_counts.get("matched", 0),
                 "unmatched_file_a": row_counts.get("unmatched_a", 0),
@@ -458,7 +457,7 @@ async def clear_old_results(keep_count: int = 10):
             # Get reconciliation IDs and their timestamps
             recon_data = []
             try:
-                for file_id in uploaded_files.list_files():
+                for file_id in uploaded_files.list():
                     if file_id.startswith('recon_') and '_metadata' in file_id:
                         recon_id = file_id.replace('_metadata', '')
                         metadata = optimized_reconciliation_storage.get_metadata_only(recon_id)
@@ -542,7 +541,7 @@ async def recent_results_health_check():
             # Count reconciliation results by looking for metadata files
             recon_count = 0
             try:
-                for file_id in uploaded_files.list_files():
+                for file_id in uploaded_files.list():
                     if file_id.startswith('recon_') and '_metadata' in file_id:
                         recon_count += 1
             except Exception as e:
