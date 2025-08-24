@@ -50,12 +50,18 @@ class S3StorageService:
                 local_endpoint = os.getenv('LOCAL_S3_ENDPOINT', 'http://localhost:4566')
                 logger.info(f"Using local S3 endpoint: {local_endpoint}")
                 
-                self.s3_client = boto3.client(
+                # Create session with explicit credentials for LocalStack
+                session = boto3.Session(
+                    aws_access_key_id='test',
+                    aws_secret_access_key='test',
+                    region_name=region or 'us-east-1'
+                )
+                
+                self.s3_client = session.client(
                     's3',
                     endpoint_url=local_endpoint,
-                    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID', 'test'),
-                    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY', 'test'),
-                    region_name=region or 'us-east-1'
+                    use_ssl=False,
+                    verify=False
                 )
             else:
                 # Production AWS S3 - validate region first

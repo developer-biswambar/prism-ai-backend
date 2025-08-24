@@ -74,21 +74,23 @@ async def get_recent_results(limit: int = 5):
             from app.services.storage_service import uploaded_files
 
             # Get all reconciliation result IDs from storage
-            # Since optimized_reconciliation_storage.storage is uploaded_files,
-            # we need to look for files with reconciliation prefixes
+            # Look for files with reconciliation suffixes (_matched, _unmatched_a, _unmatched_b)
             recon_file_ids = []
             try:
                 for file_id in uploaded_files.list():
-                    if file_id.startswith('recon_') and ('_metadata' in file_id or '_matched' in file_id):
-                        # Extract reconciliation ID from file names like "recon_123_metadata" or "recon_123_matched"
-                        if '_metadata' in file_id:
-                            recon_id = file_id.replace('_metadata', '')
-                            if recon_id not in recon_file_ids:
-                                recon_file_ids.append(recon_id)
-                        elif '_matched' in file_id:
+                    if file_id.startswith('recon_') and ('_matched' in file_id or '_unmatched_a' in file_id or '_unmatched_b' in file_id):
+                        # Extract reconciliation ID from file names like "recon_123_matched" or "recon_123_unmatched_a"
+                        if '_matched' in file_id:
                             recon_id = file_id.replace('_matched', '')
-                            if recon_id not in recon_file_ids:
-                                recon_file_ids.append(recon_id)
+                        elif '_unmatched_a' in file_id:
+                            recon_id = file_id.replace('_unmatched_a', '')
+                        elif '_unmatched_b' in file_id:
+                            recon_id = file_id.replace('_unmatched_b', '')
+                        else:
+                            continue
+                        
+                        if recon_id not in recon_file_ids:
+                            recon_file_ids.append(recon_id)
             except Exception as list_error:
                 logger.warning(f"Error listing reconciliation files: {list_error}")
                 recon_file_ids = []
@@ -458,8 +460,8 @@ async def clear_old_results(keep_count: int = 10):
             recon_data = []
             try:
                 for file_id in uploaded_files.list():
-                    if file_id.startswith('recon_') and '_metadata' in file_id:
-                        recon_id = file_id.replace('_metadata', '')
+                    if file_id.startswith('recon_') and '_matched' in file_id:
+                        recon_id = file_id.replace('_matched', '')
                         metadata = optimized_reconciliation_storage.get_metadata_only(recon_id)
                         if metadata:
                             recon_data.append((recon_id, metadata.get("timestamp", datetime.now())))
@@ -538,11 +540,11 @@ async def recent_results_health_check():
             from app.services.reconciliation_service import optimized_reconciliation_storage
             from app.services.storage_service import uploaded_files
             
-            # Count reconciliation results by looking for metadata files
+            # Count reconciliation results by looking for matched files (one per reconciliation)
             recon_count = 0
             try:
                 for file_id in uploaded_files.list():
-                    if file_id.startswith('recon_') and '_metadata' in file_id:
+                    if file_id.startswith('recon_') and '_matched' in file_id:
                         recon_count += 1
             except Exception as e:
                 logger.warning(f"Error counting reconciliation results: {e}")

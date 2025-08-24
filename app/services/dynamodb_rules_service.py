@@ -58,6 +58,7 @@ from typing import Dict, List, Optional, Any
 
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +70,88 @@ class DynamoDBRulesService:
         self.table_name = os.getenv('DYNAMODB_RULES_TABLE', 'Rules')
         self.region = os.getenv('AWS_REGION', os.getenv('AWS_DEFAULT_REGION', 'us-east-1'))
         
-        # Initialize DynamoDB client and table resource
-        self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
+        # Check for local development environment
+        use_local_dynamodb = os.getenv('USE_LOCAL_DYNAMODB', 'false').lower() == 'true'
+        
+        if use_local_dynamodb:
+            # Configure for local DynamoDB (LocalStack)
+            local_endpoint = os.getenv('LOCAL_DYNAMODB_ENDPOINT', 'http://localhost:4566')
+            logger.info(f"Using local DynamoDB endpoint: {local_endpoint}")
+            
+            # Create session with explicit credentials for LocalStack
+            session = boto3.Session(
+                aws_access_key_id='test',
+                aws_secret_access_key='test',
+                region_name=self.region
+            )
+            
+            self.dynamodb = session.resource(
+                'dynamodb',
+                endpoint_url=local_endpoint,
+                use_ssl=False,
+                verify=False,
+                config=Config(
+                    signature_version='v4',
+                    s3={'addressing_style': 'path'}
+                )
+            )
+        else:
+            # Production AWS DynamoDB
+            self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
+        
         self.table = self.dynamodb.Table(self.table_name)
         
+        # Try to create table for local development
+        if use_local_dynamodb:
+            self._ensure_table_exists()
+        
         logger.info(f"DynamoDBRulesService initialized: table={self.table_name}, region={self.region}")
+    
+    def _ensure_table_exists(self):
+        """Create the DynamoDB table if it doesn't exist (for local development)"""
+        try:
+            # Check if table exists
+            self.table.load()
+            logger.info(f"DynamoDB table '{self.table_name}' already exists")
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                # Table doesn't exist, create it
+                logger.info(f"Creating DynamoDB table '{self.table_name}'")
+                
+                table = self.dynamodb.create_table(
+                    TableName=self.table_name,
+                    KeySchema=[
+                        {
+                            'AttributeName': 'PK',
+                            'KeyType': 'HASH'  # Partition key
+                        },
+                        {
+                            'AttributeName': 'SK',
+                            'KeyType': 'RANGE'  # Sort key
+                        }
+                    ],
+                    AttributeDefinitions=[
+                        {
+                            'AttributeName': 'PK',
+                            'AttributeType': 'S'
+                        },
+                        {
+                            'AttributeName': 'SK',
+                            'AttributeType': 'S'
+                        }
+                    ],
+                    BillingMode='PAY_PER_REQUEST'  # On-demand pricing for local dev
+                )
+                
+                # Wait for table to be created
+                table.wait_until_exists()
+                logger.info(f"DynamoDB table '{self.table_name}' created successfully")
+            else:
+                logger.error(f"Error checking table existence: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error ensuring table exists: {e}")
+            raise
     
     def _get_partition_key(self, rule_type: str) -> str:
         """Generate partition key based on rule type"""

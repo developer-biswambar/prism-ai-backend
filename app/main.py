@@ -200,7 +200,7 @@ Configured for high-throughput financial data processing. Adjust based on your i
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins="*",
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -228,7 +228,7 @@ async def get_templates():
     """Get enhanced templates with column selection examples"""
     templates = [
         {
-            "name": "Reconciliation",
+            "name": "Match",
             "description": "Match financial transactions between two sources using any kinds of columns matching",
             "user_requirements": "Please configure the reconciliation to match financial transactions between the two files.",
             "prompt": "Configure reconciliation for financial transactions with amount tolerance matching",
@@ -237,7 +237,7 @@ async def get_templates():
             "fileLabels": ["Primary Transactions", "Comparison Transactions"]
         },
         {
-            "name": "🤖 AI File Generator",
+            "name": "Transform",
             "description": "Generate new files from existing data using natural language prompts...",
             "category": "ai-generation",
             "filesRequired": 1,
@@ -336,8 +336,7 @@ from app.routes.regex_routes import router as regex_router
 from app.routes.delta_routes import router as delta_router
 from app.routes.save_results_routes import router as save_results_router
 from app.routes.recent_results_routes import router as recent_results_router
-from app.routes.rule_management_routes import router as rule_management_router
-from app.routes.delta_rules_router import delta_rules_router
+from app.routes.unified_rules_router import unified_rules_router
 from app.routes.transformation_routes import router as transformation_router
 
 app.include_router(health_routes)
@@ -351,9 +350,9 @@ app.include_router(delta_router)
 app.include_router(save_results_router)
 
 app.include_router(recent_results_router)
-app.include_router(rule_management_router)
 
-app.include_router(delta_rules_router)
+# NEW: Unified rules router (replaces rule_management_router and delta_rules_router)
+app.include_router(unified_rules_router)
 
 app.include_router(transformation_router)
 print("✅ All routes loaded successfully (optimized reconciliation + AI regex generation enabled)")
