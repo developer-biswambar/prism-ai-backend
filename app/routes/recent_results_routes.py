@@ -45,23 +45,50 @@ async def get_recent_results(limit: int = 5):
 
         # Get Delta Generation results
         try:
-            from app.routes.delta_routes import delta_storage
-            for delta_id, delta_data in delta_storage.items():
-                recent_results.append(RecentResultInfo(
-                    id=delta_id,
-                    process_type="delta",
-                    status="completed",
-                    created_at=delta_data["timestamp"].isoformat() if hasattr(delta_data["timestamp"], 'isoformat') else str(delta_data["timestamp"]),
-                    file_a=delta_data['file_a'],
-                    file_b=delta_data['file_b'],
-                    summary={
-                        "unchanged_records": delta_data["row_counts"]["unchanged"],
-                        "amended_records": delta_data["row_counts"]["amended"],
-                        "deleted_records": delta_data["row_counts"]["deleted"],
-                        "newly_added_records": delta_data["row_counts"]["newly_added"]
-                    },
-                    processing_time_seconds=None  # Not stored in current delta structure
-                ))
+            from app.services.delta_storage_service import optimized_delta_storage
+            from app.services.storage_service import uploaded_files
+            
+            # Get all delta result IDs from storage
+            # Look for files with delta suffixes (_metadata, _unchanged, etc.)
+            delta_file_ids = []
+            try:
+                for file_id in uploaded_files.list():
+                    if file_id.startswith('delta_') and '_metadata' in file_id:
+                        # Extract delta ID from metadata file name
+                        delta_id = file_id.replace('_metadata', '')
+                        if delta_id not in delta_file_ids:
+                            delta_file_ids.append(delta_id)
+            except Exception as list_error:
+                logger.warning(f"Error listing delta files: {list_error}")
+                delta_file_ids = []
+
+            # Process each delta result
+            for delta_id in delta_file_ids[:limit]:  # Limit to avoid too many results
+                try:
+                    # Get metadata first to check if this is a valid delta
+                    delta_metadata = optimized_delta_storage.get_metadata_only(delta_id)
+                    if not delta_metadata:
+                        continue
+
+                    recent_results.append(RecentResultInfo(
+                        id=delta_id,
+                        process_type="delta",
+                        status="completed",
+                        created_at=delta_metadata.get("timestamp", datetime.now()).isoformat() if hasattr(delta_metadata.get("timestamp", datetime.now()), 'isoformat') else str(delta_metadata.get("timestamp", datetime.now())),
+                        file_a="File A",  # We don't store original file names in metadata
+                        file_b="File B",  # We don't store original file names in metadata
+                        summary={
+                            "unchanged_records": delta_metadata["row_counts"]["unchanged"],
+                            "amended_records": delta_metadata["row_counts"]["amended"],
+                            "deleted_records": delta_metadata["row_counts"]["deleted"],
+                            "newly_added_records": delta_metadata["row_counts"]["newly_added"]
+                        },
+                        processing_time_seconds=None  # Not stored in metadata
+                    ))
+                    
+                except Exception as delta_error:
+                    logger.warning(f"Error processing delta result {delta_id}: {delta_error}")
+                    continue
 
         except ImportError as e:
             logger.warning(f"Could not import delta storage: {e}")
@@ -265,13 +292,13 @@ async def get_delta_result_summary(delta_id: str):
     """Get summary for a specific delta result"""
 
     try:
-        from app.routes.delta_routes import delta_storage
+        from app.services.delta_storage_service import optimized_delta_storage
 
-        if delta_id not in delta_storage:
+        delta_metadata = optimized_delta_storage.get_metadata_only(delta_id)
+        if not delta_metadata:
             raise HTTPException(status_code=404, detail="Delta ID not found")
 
-        delta_data = delta_storage[delta_id]
-        row_counts = delta_data["row_counts"]
+        row_counts = delta_metadata["row_counts"]
 
         return {
             "success": True,
@@ -430,23 +457,34 @@ async def clear_old_results(keep_count: int = 10):
 
         # Clear old delta results
         try:
-            from app.routes.delta_routes import delta_storage
+            from app.services.delta_storage_service import optimized_delta_storage
+            from app.services.storage_service import uploaded_files
 
-            if len(delta_storage) > keep_count:
+            # Get delta IDs and their timestamps
+            delta_data = []
+            try:
+                for file_id in uploaded_files.list():
+                    if file_id.startswith('delta_') and '_metadata' in file_id:
+                        delta_id = file_id.replace('_metadata', '')
+                        metadata = optimized_delta_storage.get_metadata_only(delta_id)
+                        if metadata:
+                            delta_data.append((delta_id, metadata.get("timestamp", datetime.now())))
+            except Exception as e:
+                logger.warning(f"Error getting delta data for cleanup: {e}")
+
+            if len(delta_data) > keep_count:
                 # Sort by timestamp and keep only recent ones
-                sorted_deltas = sorted(
-                    delta_storage.items(),
-                    key=lambda x: x[1]["timestamp"],
-                    reverse=True
-                )
-
-                # Keep only the most recent
-                to_keep = dict(sorted_deltas[:keep_count])
-                to_delete = len(delta_storage) - len(to_keep)
-
-                delta_storage.clear()
-                delta_storage.update(to_keep)
-                deleted_count += to_delete
+                sorted_deltas = sorted(delta_data, key=lambda x: x[1], reverse=True)
+                
+                # Delete old results
+                to_delete_count = len(sorted_deltas) - keep_count
+                for delta_id, _ in sorted_deltas[keep_count:]:
+                    try:
+                        success = optimized_delta_storage.delete_results(delta_id)
+                        if success:
+                            deleted_count += 1
+                    except Exception as e:
+                        logger.warning(f"Error deleting old delta result {delta_id}: {e}")
 
         except ImportError:
             pass
@@ -531,10 +569,13 @@ async def recent_results_health_check():
         generation_count = 0
 
         try:
-            from app.routes.delta_routes import delta_storage
-            delta_count = len(delta_storage)
-        except ImportError:
-            pass
+            from app.services.storage_service import uploaded_files
+            # Count delta results by looking for metadata files
+            for file_id in uploaded_files.list():
+                if file_id.startswith('delta_') and '_metadata' in file_id:
+                    delta_count += 1
+        except Exception as e:
+            logger.warning(f"Error counting delta results: {e}")
 
         try:
             from app.services.reconciliation_service import optimized_reconciliation_storage

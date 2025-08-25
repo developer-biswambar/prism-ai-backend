@@ -101,8 +101,8 @@ class JSONDeltaRequest(BaseModel):
     delta_config: DeltaGenerationConfig
 
 
-# Storage for delta results
-delta_storage = {}
+# Import optimized storage service
+from app.services.delta_storage_service import optimized_delta_storage
 
 
 class DeltaProcessor:
@@ -921,24 +921,10 @@ async def process_delta_generation(request: JSONDeltaRequest):
         # Generate delta ID
         delta_id = generate_uuid('delta')
 
-        # Store results with filter information
-        delta_storage[delta_id] = {
-            'unchanged': delta_results['unchanged'],
-            'amended': delta_results['amended'],
-            'deleted': delta_results['deleted'],
-            'newly_added': delta_results['newly_added'],
-            'all_changes': delta_results['all_changes'],
-            'timestamp': datetime.now(),
-            'file_a': file_0.file_id,
-            'file_b': file_1.file_id,
-            'filters_applied': file_filters,  # Store filter information
-            'row_counts': {
-                'unchanged': len(delta_results['unchanged']),
-                'amended': len(delta_results['amended']),
-                'deleted': len(delta_results['deleted']),
-                'newly_added': len(delta_results['newly_added'])
-            }
-        }
+        # Store results using optimized storage service
+        storage_success = optimized_delta_storage.store_results(delta_id, delta_results)
+        if not storage_success:
+            processor.warnings.append("Failed to store some delta results to S3 storage")
 
         # Calculate summary
         processing_time = (datetime.now() - start_time).total_seconds()
@@ -958,94 +944,11 @@ async def process_delta_generation(request: JSONDeltaRequest):
         print(f"Delta generation completed in {processing_time:.2f}s")
         print(f"Results: Unchanged: {len(delta_results['unchanged'])}, Amended: {len(delta_results['amended'])}")
         print(f"Deleted: {len(delta_results['deleted'])}, New: {len(delta_results['newly_added'])}")
-
-        # Save results to server similar to reconciliation
-        from app.routes.save_results_routes import SaveResultsRequest
-        from app.routes.save_results_routes import save_results_to_server
-
-        # Save all results
-        save_request_all = SaveResultsRequest(
-            result_id=delta_id,
-            file_id=delta_id + '_all',
-            result_type="all",
-            process_type="delta",
-            file_format="csv",
-            description="All delta results from delta generation job"
-        )
-
-        # Save amended results
-        save_request_amended = SaveResultsRequest(
-            result_id=delta_id,
-            file_id=delta_id + '_amended',
-            result_type="amended",
-            process_type="delta",
-            file_format="csv",
-            description="Amended records from delta generation job"
-        )
-
-        # Save deleted results
-        save_request_deleted = SaveResultsRequest(
-            result_id=delta_id,
-            file_id=delta_id + '_deleted',
-            result_type="deleted",
-            process_type="delta",
-            file_format="csv",
-            description="Deleted records from delta generation job"
-        )
-
-        # Save newly added results
-        save_request_added = SaveResultsRequest(
-            result_id=delta_id,
-            file_id=delta_id + '_newly_added',
-            result_type="newly_added",
-            process_type="delta",
-            file_format="csv",
-            description="Newly added records from delta generation job"
-        )
-
-        # Save unchanged results
-        save_request_unchanged = SaveResultsRequest(
-            result_id=delta_id,
-            file_id=delta_id + '_unchanged',
-            result_type="unchanged",
-            process_type="delta",
-            file_format="csv",
-            description="Unchanged records from delta generation job"
-        )
-
-        # Execute save operations independently - continue even if individual saves fail
-        save_results = {}
-        save_operations = [
-            ("all", save_request_all),
-            ("amended", save_request_amended),
-            ("deleted", save_request_deleted),
-            ("added", save_request_added),
-            ("unchanged", save_request_unchanged)
-        ]
-
-        successful_saves = []
-        failed_saves = []
-
-        for save_name, save_request in save_operations:
-            try:
-                save_result = await save_results_to_server(save_request)
-                save_results[save_name] = save_result
-                successful_saves.append(save_name)
-                print(f"✅ {save_name.capitalize()} results saved successfully: {save_result}")
-            except Exception as e:
-                error_msg = f"Failed to save {save_name} results: {str(e)}"
-                print(f"❌ {error_msg}")
-                failed_saves.append(save_name)
-                processor.warnings.append(error_msg)
-
-        # Log summary of save operations
-        if successful_saves:
-            print(
-                f"✅ Successfully saved {len(successful_saves)}/{len(save_operations)} result types: {', '.join(successful_saves)}")
-        if failed_saves:
-            print(
-                f"❌ Failed to save {len(failed_saves)}/{len(save_operations)} result types: {', '.join(failed_saves)}")
-            processor.warnings.append(f"Some result saves failed: {', '.join(failed_saves)}")
+        
+        if storage_success:
+            print(f"✅ Delta results stored successfully in S3 storage")
+        else:
+            print(f"❌ Failed to store delta results to S3 storage")
 
         return DeltaResponse(
             success=True,
@@ -1071,10 +974,9 @@ async def get_delta_results(
 ):
     """Get delta generation results with pagination"""
 
-    if delta_id not in delta_storage:
+    results = optimized_delta_storage.get_results(delta_id)
+    if not results:
         raise HTTPException(status_code=404, detail="Delta ID not found")
-
-    results = delta_storage[delta_id]
 
     # Calculate pagination
     start_idx = (page - 1) * page_size
@@ -1083,20 +985,14 @@ async def get_delta_results(
     def paginate_results(data_list):
         return data_list[start_idx:end_idx]
 
-    def clean_dataframe(df):
-        # Ensure we have a clean DataFrame with unique index
-        df = df.reset_index(drop=True)
-        # Replace NaN with None (which becomes null in JSON)
-        df = df.replace({np.nan: None})
-        # Replace infinite values with None
-        df = df.replace({np.inf: None, -np.inf: None})
-        return df.to_dict(orient='records')
+    def clean_data_list(data_list):
+        # Paginate the data list which is already in dict format
+        return data_list[start_idx:end_idx]
 
     response_data = {
         'delta_id': delta_id,
-        'timestamp': results['timestamp'].isoformat(),
+        'timestamp': results['timestamp'].isoformat() if hasattr(results['timestamp'], 'isoformat') else str(results['timestamp']),
         'row_counts': results['row_counts'],
-        'filters_applied': results.get('filters_applied', {}),  # Include filter info
         'pagination': {
             'page': page,
             'page_size': page_size,
@@ -1106,21 +1002,21 @@ async def get_delta_results(
 
     if result_type == "all":
         response_data.update({
-            'unchanged': paginate_results(clean_dataframe(results['unchanged'])),
-            'amended': paginate_results(clean_dataframe(results['amended'])),
-            'deleted': paginate_results(clean_dataframe(results['deleted'])),
-            'newly_added': paginate_results(clean_dataframe(results['newly_added']))
+            'unchanged': clean_data_list(results['unchanged']),
+            'amended': clean_data_list(results['amended']),
+            'deleted': clean_data_list(results['deleted']),
+            'newly_added': clean_data_list(results['newly_added'])
         })
     elif result_type == "unchanged":
-        response_data['unchanged'] = paginate_results(clean_dataframe(results['unchanged']))
+        response_data['unchanged'] = clean_data_list(results['unchanged'])
     elif result_type == "amended":
-        response_data['amended'] = paginate_results(clean_dataframe(results['amended']))
+        response_data['amended'] = clean_data_list(results['amended'])
     elif result_type == "deleted":
-        response_data['deleted'] = paginate_results(clean_dataframe(results['deleted']))
+        response_data['deleted'] = clean_data_list(results['deleted'])
     elif result_type == "newly_added":
-        response_data['newly_added'] = paginate_results(clean_dataframe(results['newly_added']))
+        response_data['newly_added'] = clean_data_list(results['newly_added'])
     elif result_type == "all_changes":
-        response_data['all_changes'] = paginate_results(clean_dataframe(results['all_changes']))
+        response_data['all_changes'] = clean_data_list(results['all_changes'])
     else:
         raise HTTPException(status_code=400,
                             detail="Invalid result_type. Use: all, unchanged, amended, deleted, newly_added, all_changes")
@@ -1137,18 +1033,17 @@ async def download_delta_results(
 ):
     """Download delta generation results with optimized streaming for large files"""
 
-    if delta_id not in delta_storage:
+    results = optimized_delta_storage.get_results(delta_id)
+    if not results:
         raise HTTPException(status_code=404, detail="Delta ID not found")
-
-    results = delta_storage[delta_id]
 
     try:
         # Convert back to DataFrames for download
-        unchanged_df = results['unchanged']
-        amended_df = results['amended']
-        deleted_df = results['deleted']
-        newly_added_df = results['newly_added']
-        all_changes_df = results['all_changes']
+        unchanged_df = pd.DataFrame(results['unchanged']) if results['unchanged'] else pd.DataFrame()
+        amended_df = pd.DataFrame(results['amended']) if results['amended'] else pd.DataFrame()
+        deleted_df = pd.DataFrame(results['deleted']) if results['deleted'] else pd.DataFrame()
+        newly_added_df = pd.DataFrame(results['newly_added']) if results['newly_added'] else pd.DataFrame()
+        all_changes_df = pd.DataFrame(results['all_changes']) if results['all_changes'] else pd.DataFrame()
 
         if format.lower() == "excel":
             # Create Excel file with multiple sheets
@@ -1247,17 +1142,17 @@ async def download_delta_results(
 async def get_delta_summary(delta_id: str):
     """Get a quick summary of delta generation results"""
 
-    if delta_id not in delta_storage:
+    # Use metadata-only retrieval for better performance
+    metadata = optimized_delta_storage.get_metadata_only(delta_id)
+    if not metadata:
         raise HTTPException(status_code=404, detail="Delta ID not found")
 
-    results = delta_storage[delta_id]
-    row_counts = results['row_counts']
+    row_counts = metadata['row_counts']
     total_records = sum(row_counts.values())
 
     return {
         'delta_id': delta_id,
-        'timestamp': results['timestamp'].isoformat(),
-        'filters_applied': results.get('filters_applied', {}),
+        'timestamp': metadata['timestamp'] if isinstance(metadata['timestamp'], str) else metadata['timestamp'].isoformat(),
         'summary': {
             'total_records_compared': total_records,
             'unchanged_records': row_counts['unchanged'],
@@ -1278,14 +1173,18 @@ async def get_delta_summary(delta_id: str):
 
 @router.delete("/results/{delta_id}")
 async def delete_delta_results(delta_id: str):
-    """Delete delta generation results to free up memory"""
+    """Delete delta generation results to free up storage"""
 
-    if delta_id not in delta_storage:
+    metadata = optimized_delta_storage.get_metadata_only(delta_id)
+    if not metadata:
         raise HTTPException(status_code=404, detail="Delta ID not found")
 
-    # Remove from storage
-    del delta_storage[delta_id]
-    return {"success": True, "message": f"Delta results {delta_id} deleted successfully"}
+    # Delete from S3 storage
+    success = optimized_delta_storage.delete_results(delta_id)
+    if success:
+        return {"success": True, "message": f"Delta results {delta_id} deleted successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete delta results")
 
 
 @router.get("/health")
@@ -1309,7 +1208,13 @@ async def delta_health_check():
             "error": str(e)
         }
 
-    storage_count = len(delta_storage)
+    # Count stored deltas using the optimized storage
+    try:
+        stored_deltas = optimized_delta_storage.list_deltas(limit=1000)  # Get count
+        storage_count = len(stored_deltas)
+    except Exception as e:
+        logger.warning(f"Error counting stored deltas: {e}")
+        storage_count = 0
 
     return {
         "status": "healthy",
