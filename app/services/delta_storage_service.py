@@ -1,7 +1,7 @@
 # Delta Storage Service - S3-based storage for delta results similar to reconciliation service
 import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import pandas as pd
 
 # Setup logging
@@ -393,7 +393,21 @@ class OptimizedDeltaStorage:
             all_files = self.storage.list()
             delta_ids = []
             
+            # Handle case where list() returns None or empty
+            if not all_files:
+                logger.debug("DeltaStorage: No files found in storage")
+                return []
+            
+            # Ensure all_files is iterable
+            if not hasattr(all_files, '__iter__'):
+                logger.error(f"DeltaStorage: storage.list() returned non-iterable: {type(all_files)}")
+                return []
+            
             for file_id in all_files:
+                # Ensure file_id is a string
+                if not isinstance(file_id, str):
+                    continue
+                    
                 if file_id.startswith('delta_') and '_metadata' in file_id:
                     # Extract delta ID from metadata file name
                     delta_id = file_id.replace('_metadata', '')
@@ -403,10 +417,13 @@ class OptimizedDeltaStorage:
             # Sort by most recent (assuming delta IDs contain timestamps)
             delta_ids.sort(reverse=True)
             
+            logger.debug(f"DeltaStorage: Found {len(delta_ids)} delta results")
             return delta_ids[:limit]
             
         except Exception as e:
             logger.error(f"DeltaStorage LIST ERROR: {e}")
+            import traceback
+            logger.error(f"DeltaStorage LIST TRACEBACK: {traceback.format_exc()}")
             return []
 
 

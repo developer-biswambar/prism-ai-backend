@@ -52,12 +52,16 @@ async def get_recent_results(limit: int = 5):
             # Look for files with delta suffixes (_metadata, _unchanged, etc.)
             delta_file_ids = []
             try:
-                for file_id in uploaded_files.list():
-                    if file_id.startswith('delta_') and '_metadata' in file_id:
-                        # Extract delta ID from metadata file name
-                        delta_id = file_id.replace('_metadata', '')
-                        if delta_id not in delta_file_ids:
-                            delta_file_ids.append(delta_id)
+                all_files = uploaded_files.list()
+                if all_files and hasattr(all_files, '__iter__'):
+                    for file_id in all_files:
+                        if isinstance(file_id, str) and file_id.startswith('delta_') and '_metadata' in file_id:
+                            # Extract delta ID from metadata file name
+                            delta_id = file_id.replace('_metadata', '')
+                            if delta_id not in delta_file_ids:
+                                delta_file_ids.append(delta_id)
+                else:
+                    logger.warning("uploaded_files.list() returned non-iterable or empty result")
             except Exception as list_error:
                 logger.warning(f"Error listing delta files: {list_error}")
                 delta_file_ids = []
@@ -463,12 +467,16 @@ async def clear_old_results(keep_count: int = 10):
             # Get delta IDs and their timestamps
             delta_data = []
             try:
-                for file_id in uploaded_files.list():
-                    if file_id.startswith('delta_') and '_metadata' in file_id:
-                        delta_id = file_id.replace('_metadata', '')
-                        metadata = optimized_delta_storage.get_metadata_only(delta_id)
-                        if metadata:
-                            delta_data.append((delta_id, metadata.get("timestamp", datetime.now())))
+                all_files = uploaded_files.list()
+                if all_files and hasattr(all_files, '__iter__'):
+                    for file_id in all_files:
+                        if isinstance(file_id, str) and file_id.startswith('delta_') and '_metadata' in file_id:
+                            delta_id = file_id.replace('_metadata', '')
+                            metadata = optimized_delta_storage.get_metadata_only(delta_id)
+                            if metadata:
+                                delta_data.append((delta_id, metadata.get("timestamp", datetime.now())))
+                else:
+                    logger.warning("uploaded_files.list() returned non-iterable result in cleanup")
             except Exception as e:
                 logger.warning(f"Error getting delta data for cleanup: {e}")
 
@@ -571,9 +579,13 @@ async def recent_results_health_check():
         try:
             from app.services.storage_service import uploaded_files
             # Count delta results by looking for metadata files
-            for file_id in uploaded_files.list():
-                if file_id.startswith('delta_') and '_metadata' in file_id:
-                    delta_count += 1
+            all_files = uploaded_files.list()
+            if all_files and hasattr(all_files, '__iter__'):
+                for file_id in all_files:
+                    if isinstance(file_id, str) and file_id.startswith('delta_') and '_metadata' in file_id:
+                        delta_count += 1
+            else:
+                logger.warning("uploaded_files.list() returned non-iterable result in health check")
         except Exception as e:
             logger.warning(f"Error counting delta results: {e}")
 
