@@ -156,6 +156,58 @@ class OptimizedDeltaStorage:
                 if success:
                     logger.info(f"DeltaStorage: Stored newly_added results ({newly_added_count} records)")
 
+            # 5. Store ALL results (combined file with all changes)
+            # Create combined dataset with type indicators
+            all_data_list = []
+            if unchanged_count > 0:
+                unchanged_with_type = results['unchanged'].copy()
+                unchanged_with_type['Delta_Category'] = 'UNCHANGED'
+                all_data_list.append(unchanged_with_type)
+            
+            if amended_count > 0:
+                amended_with_type = results['amended'].copy()
+                amended_with_type['Delta_Category'] = 'AMENDED'
+                all_data_list.append(amended_with_type)
+                
+            if deleted_count > 0:
+                deleted_with_type = results['deleted'].copy()
+                deleted_with_type['Delta_Category'] = 'DELETED'
+                all_data_list.append(deleted_with_type)
+                
+            if newly_added_count > 0:
+                newly_added_with_type = results['newly_added'].copy()
+                newly_added_with_type['Delta_Category'] = 'NEWLY_ADDED'
+                all_data_list.append(newly_added_with_type)
+            
+            if all_data_list:
+                all_results_df = pd.concat(all_data_list, ignore_index=True)
+                all_columns = list(all_results_df.columns)
+                all_info = {
+                    'file_id': f"{delta_id}_all",
+                    'filename': f'delta_{delta_id}_all.xlsx',
+                    'custom_name': None,
+                    'file_type': 'delta',
+                    'file_source': 'delta',
+                    'total_rows': len(all_results_df),
+                    'total_columns': len(all_columns),
+                    'columns': all_columns,
+                    'upload_time': timestamp_iso,
+                    'file_size_mb': 0,
+                    'data_types': {col: str(dtype) for col, dtype in all_results_df.dtypes.items()},
+                    'delta_id': delta_id,
+                    'result_type': 'all'
+                }
+                
+                all_data = {
+                    'info': all_info,
+                    'data': all_results_df
+                }
+                
+                success = self.storage.save(f"{delta_id}_all", all_data, all_info)
+                all_success = all_success and success
+                if success:
+                    logger.info(f"DeltaStorage: Stored all results ({len(all_results_df)} records)")
+
             # Store metadata file with summary information
             metadata_info = {
                 'file_id': f"{delta_id}_metadata",
@@ -265,7 +317,17 @@ class OptimizedDeltaStorage:
                     result['timestamp'] = newly_added_data['info'].get('upload_time')
                 total_records += len(result['newly_added'])
             
-            # Create all_changes by combining amended, deleted, newly_added
+            # Get all results (stored as separate combined file)
+            if self.storage.exists(f"{delta_id}_all"):
+                all_data = self.storage.get(f"{delta_id}_all")
+                result['all'] = all_data['data'].to_dict('records')
+                if not result['timestamp']:
+                    result['timestamp'] = all_data['info'].get('upload_time')
+                total_records += len(result['all'])
+            else:
+                result['all'] = []
+            
+            # Create all_changes by combining amended, deleted, newly_added (backward compatibility)
             result['all_changes'] = result['amended'] + result['deleted'] + result['newly_added']
             
             # Convert timestamp string back to datetime if needed
@@ -355,7 +417,7 @@ class OptimizedDeltaStorage:
             total_count = 0
             
             # List of all possible file types for a delta result
-            file_types = ['unchanged', 'amended', 'deleted', 'newly_added', 'metadata']
+            file_types = ['unchanged', 'amended', 'deleted', 'newly_added', 'all', 'metadata']
             
             for file_type in file_types:
                 file_id = f"{delta_id}_{file_type}"

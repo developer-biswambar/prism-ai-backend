@@ -116,11 +116,11 @@ class DeltaProcessor:
         """Read file from storage service"""
         from app.services.storage_service import uploaded_files
 
-        if file_id not in uploaded_files:
+        if not uploaded_files.exists(file_id):
             raise HTTPException(status_code=404, detail=f"File with ID {file_id} not found")
 
         try:
-            file_data = uploaded_files[file_id]
+            file_data = uploaded_files.get(file_id)
             return file_data["data"]  # Return the DataFrame directly
         except Exception as e:
             logger.error(f"Error retrieving file {file_id}: {str(e)}")
@@ -596,11 +596,11 @@ async def get_file_by_id(file_id: str):
     """Retrieve file DataFrame by ID from storage service"""
     from app.services.storage_service import uploaded_files
 
-    if file_id not in uploaded_files:
+    if not uploaded_files.exists(file_id):
         raise HTTPException(status_code=404, detail=f"File with ID {file_id} not found")
 
     try:
-        file_data = uploaded_files[file_id]
+        file_data = uploaded_files.get(file_id)
         return file_data["data"]  # Return DataFrame directly
     except Exception as e:
         logger.error(f"Error retrieving file {file_id}: {str(e)}")
@@ -968,7 +968,7 @@ async def process_delta_generation(request: JSONDeltaRequest):
 @router.get("/results/{delta_id}")
 async def get_delta_results(
         delta_id: str,
-        result_type: Optional[str] = "all",  # all, unchanged, amended, deleted, newly_added, all_changes
+        result_type: Optional[str] = "all",  # all, unchanged, amended, deleted, newly_added, all_changes, all_combined
         page: Optional[int] = 1,
         page_size: Optional[int] = 1000
 ):
@@ -1017,9 +1017,11 @@ async def get_delta_results(
         response_data['newly_added'] = clean_data_list(results['newly_added'])
     elif result_type == "all_changes":
         response_data['all_changes'] = clean_data_list(results['all_changes'])
+    elif result_type == "all_combined":
+        response_data['all_combined'] = clean_data_list(results.get('all', []))
     else:
         raise HTTPException(status_code=400,
-                            detail="Invalid result_type. Use: all, unchanged, amended, deleted, newly_added, all_changes")
+                            detail="Invalid result_type. Use: all, unchanged, amended, deleted, newly_added, all_changes, all_combined")
 
     return response_data
 
@@ -1028,7 +1030,7 @@ async def get_delta_results(
 async def download_delta_results(
         delta_id: str,
         format: str = "csv",
-        result_type: str = "all",  # all, unchanged, amended, deleted, newly_added, all_changes
+        result_type: str = "all",  # all, unchanged, amended, deleted, newly_added, all_changes, all_combined
         compress: bool = True
 ):
     """Download delta generation results with optimized streaming for large files"""
@@ -1044,6 +1046,7 @@ async def download_delta_results(
         deleted_df = pd.DataFrame(results['deleted']) if results['deleted'] else pd.DataFrame()
         newly_added_df = pd.DataFrame(results['newly_added']) if results['newly_added'] else pd.DataFrame()
         all_changes_df = pd.DataFrame(results['all_changes']) if results['all_changes'] else pd.DataFrame()
+        all_combined_df = pd.DataFrame(results.get('all', [])) if results.get('all') else pd.DataFrame()
 
         if format.lower() == "excel":
             # Create Excel file with multiple sheets
@@ -1089,6 +1092,8 @@ async def download_delta_results(
                     newly_added_df.to_excel(writer, sheet_name='Newly Added Records', index=False)
                 elif result_type == "all_changes" and len(all_changes_df) > 0:
                     all_changes_df.to_excel(writer, sheet_name='All Changes', index=False)
+                elif result_type == "all_combined" and len(all_combined_df) > 0:
+                    all_combined_df.to_excel(writer, sheet_name='All Combined', index=False)
 
             output.seek(0)
 
@@ -1107,6 +1112,8 @@ async def download_delta_results(
                 df_to_export = newly_added_df
             elif result_type == "all_changes":
                 df_to_export = all_changes_df
+            elif result_type == "all_combined":
+                df_to_export = all_combined_df
             else:  # "all"
                 # For "all", combine all data with type indicator
                 df_to_export = pd.concat([
