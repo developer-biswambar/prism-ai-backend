@@ -28,11 +28,34 @@ async def get_file_dataframe(file_ref: SourceFile) -> pd.DataFrame:
     # Import here to avoid circular imports
     from app.services.storage_service import uploaded_files
 
-    if file_ref.file_id not in uploaded_files:
+    if not uploaded_files.exists(file_ref.file_id):
         raise HTTPException(status_code=404, detail=f"File {file_ref.file_id} not found")
 
-    file_data = uploaded_files[file_ref.file_id]
+    file_data = uploaded_files.get(file_ref.file_id)
     return file_data["data"]
+
+
+def apply_file_filters(df: pd.DataFrame, filters: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Apply filters to a dataframe based on filter configuration"""
+    if not filters:
+        return df
+    
+    filtered_df = df.copy()
+    
+    for filter_config in filters:
+        column = filter_config.get('column')
+        values = filter_config.get('values', [])
+        
+        if not column or not values or column not in filtered_df.columns:
+            continue
+            
+        # Apply OR condition for multiple values in the same filter
+        condition = filtered_df[column].isin(values)
+        filtered_df = filtered_df[condition]
+        
+        logger.info(f"Applied filter on {column}: {len(values)} values, resulting in {len(filtered_df)} rows")
+    
+    return filtered_df
 
 
 def evaluate_expression(expression: str, row_data: Dict[str, Any]) -> Any:
@@ -336,15 +359,32 @@ async def process_transformation(request: TransformationRequest):
         # Load source files into dataframes
         source_data = {}
         total_input_rows = 0
+        
+        # Extract transformation config
+        transformation_config = request.transformation_config.dict() if hasattr(request.transformation_config,
+                                                                                'dict') else request.transformation_config
+        
+        # Get file filters if they exist
+        file_filters = transformation_config.get('file_filters', {})
+        
         for source_file in request.source_files:
             df = await get_file_dataframe(source_file)
+            original_rows = len(df)
+            logger.info(f"Loaded {source_file.alias}: {original_rows} rows")
+            
+            # Apply filters if they exist for this file
+            file_index = request.source_files.index(source_file)
+            file_key = f"file_{file_index}"
+            
+            if file_key in file_filters and file_filters[file_key]:
+                df = apply_file_filters(df, file_filters[file_key])
+                filtered_rows = len(df)
+                logger.info(f"Applied filters to {source_file.alias}: {original_rows} -> {filtered_rows} rows")
+            
             source_data[source_file.alias] = df
-            logger.info(f"Loaded {source_file.alias}: {len(df)} rows")
             total_input_rows += len(df)
 
         # Process transformation using new rule-based system
-        transformation_config = request.transformation_config.dict() if hasattr(request.transformation_config,
-                                                                                'dict') else request.transformation_config
         result_datasets = process_transformation_rules(source_data, transformation_config)
 
         # Calculate totals and collect errors
@@ -411,7 +451,7 @@ async def process_transformation(request: TransformationRequest):
                     filename = f"{transformation_config.get('name', 'Transformation')}_{dataset_name}.csv"
 
                 # Store in uploaded_files format
-                uploaded_files[file_id] = {
+                file_data = {
                     "data": df,
                     "info": {
                         "file_id": file_id,
@@ -425,6 +465,7 @@ async def process_transformation(request: TransformationRequest):
                         "last_modified": datetime.now().isoformat()
                     }
                 }
+                uploaded_files.save(file_id, file_data)
 
             if not storage_success:
                 logger.warning("Failed to store transformation results")
@@ -732,6 +773,24 @@ Generate a transformation configuration with this exact JSON structure:
             "purpose": "Primary data source"
         }}
     ],
+    "file_filters": {{
+        "file_0": [
+            {{
+                "column": "status_column",
+                "values": ["Active", "Pending"]
+            }},
+            {{
+                "column": "category_column", 
+                "values": ["Premium", "Standard"]
+            }}
+        ],
+        "file_1": [
+            {{
+                "column": "region_column",
+                "values": ["North", "South"]
+            }}
+        ]
+    }},
     "row_generation_rules": [
         {{
             "id": "rule_1",
@@ -767,7 +826,35 @@ Generate a transformation configuration with this exact JSON structure:
     "validation_rules": []
 }}
 
-**CRITICAL: Create only ONE rule in the "row_generation_rules" array. Put ALL requested columns inside the "output_columns" array of this single rule.**
+**RULE CREATION LOGIC**:
+- **DEFAULT**: Create ONE rule with ALL columns unless user explicitly requests multiple rules
+- **MULTIPLE RULES**: Create separate rules ONLY when user explicitly mentions:
+  - "2 rules", "multiple rules", "separate rules", "different rules" 
+  - "one rule for X and another rule for Y"
+  - "split into rules", "divide into rules"
+- **RULE NAMING**: Give descriptive names to each rule (e.g., "Customer Data Processing", "Financial Calculations")
+
+FILTER GENERATION RULES:
+
+1. **WHEN TO GENERATE FILTERS**: Generate filters if the user requirements mention:
+   - Filtering data (e.g., "only active records", "exclude pending items")
+   - Specific categories/statuses (e.g., "only Premium customers", "processed transactions only")
+   - Date ranges, value ranges, or specific values
+   - Data quality requirements (e.g., "non-null values", "valid entries")
+
+2. **FILTER STRUCTURE**: 
+   - Use "file_filters" object with keys like "file_0", "file_1" for each source file
+   - Each filter has "column" (existing source column) and "values" (array of values to include)
+   - Multiple values in same filter = OR condition (include rows matching ANY value)
+   - Multiple filters for same file = AND condition (include rows matching ALL filters)
+
+3. **FILTER EXAMPLES**:
+   - Status filtering: {{"column": "Status", "values": ["Active", "Completed"]}}
+   - Category filtering: {{"column": "Category", "values": ["Premium", "Gold"]}}
+   - Region filtering: {{"column": "Region", "values": ["North", "South", "East"]}}
+   - Year filtering: {{"column": "Year", "values": ["2023", "2024"]}}
+
+4. **NO FILTERS**: If user requirements don't mention filtering, set "file_filters": {{}}
 
 MAPPING TYPE SELECTION RULES:
 
@@ -814,11 +901,13 @@ CRITICAL RULES:
 4. For categorization → Use "dynamic" mapping with comparison operators on source columns
 5. NEVER reference calculated/output columns in condition_column
 6. Create calculated fields first, then categorize based on source data
-7. **ALWAYS CREATE EXACTLY ONE (1) RULE** - Put all columns in a single rule unless user explicitly asks for multiple rules
-8. Never create multiple rules unless the user specifically mentions "multiple rules", "separate rules", or "different rules"
-9. Return ONLY valid JSON configuration, no additional text
+7. **RULE COUNT**: Follow the rule creation logic above - default to single rule, create multiple ONLY when explicitly requested
+8. **RULE STRUCTURE**: Each rule must have unique ID, descriptive name, and appropriate output columns
+9. **FILTER COLUMNS**: Only use existing source columns in filters, never calculated/output columns
+10. **FILTER VALUES**: Generate realistic filter values based on the column type and user requirements
+11. Return ONLY valid JSON configuration, no additional text
 
-**IMPORTANT: DEFAULT BEHAVIOR = SINGLE RULE WITH ALL COLUMNS**
+**IMPORTANT: DEFAULT BEHAVIOR = SINGLE RULE WITH ALL COLUMNS (unless user explicitly requests multiple rules)**
 
 CORRECT EXAMPLES:
 
@@ -873,6 +962,103 @@ Example 5 - Direct Copy (DIRECT):
   "source_column": "Product_Name"
 }}
 
+Example 6 - Complete Configuration with Filters (Single Rule):
+{{
+  "name": "Active Premium Customer Analysis",
+  "description": "Transform active premium customer data with profit calculations",
+  "source_files": [...],
+  "file_filters": {{
+    "file_0": [
+      {{
+        "column": "Status",
+        "values": ["Active", "Verified"]
+      }},
+      {{
+        "column": "Customer_Tier", 
+        "values": ["Premium", "Gold"]
+      }}
+    ]
+  }},
+  "row_generation_rules": [
+    {{
+      "id": "rule_1",
+      "name": "Customer Profit Analysis",
+      "enabled": true,
+      "output_columns": [
+        {{
+          "id": "col_1",
+          "name": "customer_name",
+          "mapping_type": "direct",
+          "source_column": "Customer_Name"
+        }},
+        {{
+          "id": "col_2", 
+          "name": "profit_margin",
+          "mapping_type": "static",
+          "static_value": "{{Revenue}} - {{Cost}}"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Example 7 - Multiple Rules Configuration:
+{{
+  "name": "Customer and Financial Analysis",
+  "description": "Process customer data and financial calculations separately",
+  "source_files": [...],
+  "file_filters": {{}},
+  "row_generation_rules": [
+    {{
+      "id": "rule_1",
+      "name": "Customer Data Processing",
+      "enabled": true,
+      "output_columns": [
+        {{
+          "id": "col_1",
+          "name": "customer_name",
+          "mapping_type": "direct",
+          "source_column": "Customer_Name"
+        }},
+        {{
+          "id": "col_2",
+          "name": "customer_category",
+          "mapping_type": "dynamic",
+          "dynamic_conditions": [
+            {{
+              "id": "cond_1",
+              "condition_column": "Total_Purchases",
+              "operator": ">=",
+              "condition_value": "1000",
+              "output_value": "Premium"
+            }}
+          ],
+          "default_value": "Standard"
+        }}
+      ]
+    }},
+    {{
+      "id": "rule_2", 
+      "name": "Financial Calculations",
+      "enabled": true,
+      "output_columns": [
+        {{
+          "id": "col_3",
+          "name": "profit_margin",
+          "mapping_type": "static",
+          "static_value": "{{Revenue}} - {{Cost}}"
+        }},
+        {{
+          "id": "col_4",
+          "name": "profit_percentage",
+          "mapping_type": "static", 
+          "static_value": "({{Revenue}} - {{Cost}}) / {{Revenue}} * 100"
+        }}
+      ]
+    }}
+  ]
+}}
+
 Use {{column_name}} syntax to reference column values in expressions.
 **COLUMN DEPENDENCY**: Calculated columns can reference other calculated columns defined earlier in the same rule.
 """
@@ -880,7 +1066,7 @@ Use {{column_name}} syntax to reference column values in expressions.
         # Call LLM service
         messages = [
             LLMMessage(role="system",
-                       content="You are a data transformation expert. Return only valid JSON configuration. ALWAYS create exactly ONE rule with ALL columns inside it unless explicitly asked for multiple rules."),
+                       content="You are a data transformation expert. Return only valid JSON configuration. Create ONE rule by default with ALL columns inside it. Create multiple rules ONLY when user explicitly requests multiple/separate rules. Generate filters when user requirements mention data filtering, specific categories, or value restrictions."),
             LLMMessage(role="user", content=prompt)
         ]
 

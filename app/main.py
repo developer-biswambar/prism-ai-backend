@@ -1,6 +1,9 @@
 # backend/app/main.py - Updated with regex generation routes
 import logging
 import os
+import signal
+import sys
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -44,6 +47,21 @@ print(f"📊 Batch Size: {BATCH_SIZE}")
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global shutdown flag
+shutdown_event = threading.Event()
+
+def sigterm_handler(signum, frame):
+    """Handle SIGTERM signal for graceful shutdown"""
+    signal_name = signal.Signals(signum).name
+    logger.info(f"📡 Received {signal_name}, starting graceful shutdown...")
+    shutdown_event.set()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigterm_handler)
+logger.info("✅ Signal handlers registered (SIGTERM, SIGINT)")
 
 
 @asynccontextmanager
@@ -205,6 +223,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def shutdown_middleware(request: Request, call_next):
+    """Check for shutdown status and return 503 if shutting down"""
+    if shutdown_event.is_set():
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Service shutting down", "message": "Server is gracefully shutting down"}
+        )
+    return await call_next(request)
 
 
 # Custom exception handler for large file processing
