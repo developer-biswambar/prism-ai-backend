@@ -450,22 +450,26 @@ async def process_transformation(request: TransformationRequest):
                     file_id = f"{transformation_id}_rule_{i}"
                     filename = f"{transformation_config.get('name', 'Transformation')}_{dataset_name}.csv"
 
-                # Store in uploaded_files format
-                file_data = {
-                    "data": df,
-                    "info": {
-                        "file_id": file_id,
-                        "filename": filename,
-                        "file_size_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
-                        "upload_time": datetime.now().isoformat(),
-                        "total_rows": len(df),
-                        "columns": list(df.columns),
-                        "file_type": "transformation_result",
-                        "transformation_id": transformation_id,
-                        "last_modified": datetime.now().isoformat()
-                    }
+                # Store in uploaded_files format (matching file upload structure)
+                file_info = {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "file_size_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
+                    "upload_time": datetime.now().isoformat(),
+                    "total_rows": len(df),
+                    "total_columns": len(df.columns),
+                    "columns": list(df.columns),
+                    "file_type": "transformation_result",
+                    "transformation_id": transformation_id,
+                    "last_modified": datetime.now().isoformat(),
+                    "data_types": {col: str(dtype) for col, dtype in df.dtypes.items()}
                 }
-                uploaded_files.save(file_id, file_data)
+                
+                file_data = {
+                    "info": file_info,
+                    "data": df
+                }
+                uploaded_files.save(file_id, file_data, file_info)
 
             if not storage_success:
                 logger.warning("Failed to store transformation results")

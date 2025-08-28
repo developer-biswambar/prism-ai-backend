@@ -1,8 +1,9 @@
-# Simplified LLM Service - Supports OpenAI and JPMC LLM
+# Simplified LLM Service - Supports OpenAI, Azure OpenAI, and JPMC LLM
 """
-Simplified LLM service architecture supporting two providers:
+Simplified LLM service architecture supporting three providers:
 1. OpenAI - External API service
-2. JPMC LLM - Custom internal LLM service
+2. Azure OpenAI - Microsoft Azure hosted OpenAI service
+3. JPMC LLM - Custom internal LLM service
 """
 
 import logging
@@ -178,6 +179,142 @@ class OpenAILLMService(LLMServiceInterface):
         return self.model
 
 
+class AzureOpenAILLMService(LLMServiceInterface):
+    """Azure OpenAI implementation of the LLM service"""
+
+    def __init__(
+        self, 
+        api_key: Optional[str] = None, 
+        endpoint: Optional[str] = None,
+        model: str = "gpt-4",
+        api_version: str = "2024-02-01",
+        tenant_id: Optional[str] = None,
+        proxy: Optional[dict] = None,
+        **kwargs
+    ):
+        """
+        Initialize Azure OpenAI service
+        
+        Args:
+            api_key: Azure OpenAI API key
+            endpoint: Azure OpenAI endpoint URL
+            model: Model deployment name
+            api_version: Azure OpenAI API version
+            tenant_id: Azure tenant ID (optional)
+            proxy: Proxy configuration dict with 'http' and 'https' keys
+            **kwargs: Additional configuration
+        """
+        self.api_key = api_key or os.getenv('AZURE_OPENAI_API_KEY')
+        self.endpoint = endpoint or os.getenv('AZURE_OPENAI_ENDPOINT')
+        self.model = model
+        self.api_version = api_version
+        self.tenant_id = tenant_id or os.getenv('AZURE_TENANT_ID')
+        self.proxy = proxy
+        self._client = None
+
+        if self.api_key and self.endpoint:
+            try:
+                from openai import AzureOpenAI
+                
+                # Configure proxy if provided
+                client_kwargs = {
+                    'api_key': self.api_key,
+                    'azure_endpoint': self.endpoint,
+                    'api_version': self.api_version
+                }
+                
+                # Add proxy configuration if available
+                if self.proxy:
+                    import httpx
+                    client_kwargs['http_client'] = httpx.Client(proxies=self.proxy)
+                
+                self._client = AzureOpenAI(**client_kwargs)
+                logger.info(f"Azure OpenAI LLM service initialized with model: {self.model} at {self.endpoint}")
+                
+            except ImportError:
+                logger.error("OpenAI package not installed. Install with: pip install openai")
+                self._client = None
+            except Exception as e:
+                logger.error(f"Failed to initialize Azure OpenAI client: {e}")
+                self._client = None
+        else:
+            logger.warning("Azure OpenAI service not configured. Check AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT")
+
+    def generate_text(
+            self,
+            messages: List[LLMMessage],
+            temperature: float = 0.3,
+            max_tokens: int = 2000,
+            **kwargs
+    ) -> LLMResponse:
+        """Generate text using Azure OpenAI API"""
+        if not self.is_available():
+            return LLMResponse(
+                content="",
+                provider="azure_openai",
+                model=self.model,
+                success=False,
+                error="Azure OpenAI service not available"
+            )
+
+        try:
+            # Convert our message format to OpenAI format
+            openai_messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in messages
+            ]
+
+            response = self._client.chat.completions.create(
+                model=self.model,  # This should be the deployment name in Azure
+                messages=openai_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs
+            )
+
+            raw_content = response.choices[0].message.content.strip()
+
+            # Try to sanitize JSON output
+            try:
+                sanitized_content = extract_json_string(raw_content)
+                logger.debug(f"JSON sanitized for Azure OpenAI response")
+            except ValueError:
+                # If no JSON found, use raw content
+                sanitized_content = raw_content
+                logger.debug(f"No JSON content found in Azure OpenAI response, using raw content")
+
+            return LLMResponse(
+                content=sanitized_content,
+                provider="azure_openai",
+                model=self.model,
+                success=True
+            )
+
+        except Exception as e:
+            logger.error(f"Azure OpenAI API error: {e}")
+            return LLMResponse(
+                content="",
+                provider="azure_openai",
+                model=self.model,
+                success=False,
+                error=str(e)
+            )
+
+    def is_available(self) -> bool:
+        """Check if Azure OpenAI service is available"""
+        return (
+            self._client is not None 
+            and self.api_key is not None 
+            and self.endpoint is not None
+        )
+
+    def get_provider_name(self) -> str:
+        return "azure_openai"
+
+    def get_model_name(self) -> str:
+        return self.model
+
+
 class JPMCLLMService(LLMServiceInterface):
     """JPMC Custom LLM implementation - Internal service without API key"""
 
@@ -336,6 +473,7 @@ class LLMServiceFactory:
 
     _providers = {
         "openai": OpenAILLMService,
+        "azure_openai": AzureOpenAILLMService,
         "jpmcllm": JPMCLLMService,
     }
 
@@ -359,6 +497,9 @@ class LLMServiceFactory:
         if provider == "openai":
             constructor_kwargs = {k: v for k, v in kwargs.items()
                                   if k in ['api_key', 'model']}
+        elif provider == "azure_openai":
+            constructor_kwargs = {k: v for k, v in kwargs.items()
+                                  if k in ['api_key', 'endpoint', 'model', 'api_version', 'tenant_id', 'proxy']}
         elif provider == "jpmcllm":
             constructor_kwargs = {k: v for k, v in kwargs.items()
                                   if k in ['api_url', 'model']}
@@ -381,8 +522,8 @@ class LLMServiceFactory:
     def get_default_service(cls) -> LLMServiceInterface:
         """Get the default LLM service (tries providers in order of preference)"""
 
-        # Try providers in order of preference: JPMC first, then OpenAI
-        preferred_order = ["jpmcllm", "openai"]
+        # Try providers in order of preference: JPMC first, then Azure OpenAI, then OpenAI
+        preferred_order = ["jpmcllm", "azure_openai", "openai"]
 
         for provider in preferred_order:
             try:
@@ -420,6 +561,16 @@ def get_llm_service() -> LLMServiceInterface:
                     provider=config.get('provider'),
                     api_url=config.get('api_url'),
                     model=config.get('model')
+                )
+            elif config['provider'] == 'azure_openai':
+                _llm_service = LLMServiceFactory.create_service(
+                    provider=config.get('provider'),
+                    api_key=config.get('api_key'),
+                    endpoint=config.get('endpoint'),
+                    model=config.get('model'),
+                    api_version=config.get('api_version', '2024-02-01'),
+                    tenant_id=config.get('tenant_id'),
+                    proxy=config.get('proxy')
                 )
             else:
                 _llm_service = LLMServiceFactory.create_service(
@@ -459,6 +610,96 @@ def get_llm_generation_params() -> dict:
             'temperature': 0.3,
             'max_tokens': 2000
         }
+
+
+def configure_azure_openai_service(
+    api_key: str,
+    endpoint: str,
+    model: str = "gpt-4",
+    api_version: str = "2024-02-01",
+    tenant_id: Optional[str] = None,
+    proxy_config: Optional[dict] = None
+) -> AzureOpenAILLMService:
+    """
+    Helper function to configure Azure OpenAI service with provided credentials.
+    This function allows you to programmatically set up Azure OpenAI without environment variables.
+    
+    Args:
+        api_key: Azure OpenAI API key
+        endpoint: Azure OpenAI endpoint URL (e.g., https://your-resource.openai.azure.com/)
+        model: Model deployment name (e.g., "gpt-4", "gpt-35-turbo")
+        api_version: Azure OpenAI API version (default: "2024-02-01")
+        tenant_id: Azure tenant ID (optional)
+        proxy_config: Proxy configuration dict with 'http' and 'https' keys (optional)
+                     Example: {"http": "http://proxy:8080", "https": "http://proxy:8080"}
+    
+    Returns:
+        Configured AzureOpenAILLMService instance
+    
+    Example:
+        service = configure_azure_openai_service(
+            api_key="your-api-key",
+            endpoint="https://your-resource.openai.azure.com/",
+            model="gpt-4",
+            tenant_id="your-tenant-id",
+            proxy_config={"http": "http://proxy:8080", "https": "http://proxy:8080"}
+        )
+        set_llm_service(service)
+    """
+    service = AzureOpenAILLMService(
+        api_key=api_key,
+        endpoint=endpoint,
+        model=model,
+        api_version=api_version,
+        tenant_id=tenant_id,
+        proxy=proxy_config
+    )
+    
+    if not service.is_available():
+        raise ValueError("Failed to configure Azure OpenAI service. Check your credentials and endpoint.")
+    
+    logger.info(f"Azure OpenAI service configured successfully: {model} at {endpoint}")
+    return service
+
+
+def configure_and_set_azure_openai(
+    api_key: str,
+    endpoint: str,
+    model: str = "gpt-4",
+    api_version: str = "2024-02-01",
+    tenant_id: Optional[str] = None,
+    proxy_config: Optional[dict] = None
+):
+    """
+    Configure Azure OpenAI service and set it as the global LLM service.
+    
+    This is a convenience function that combines configure_azure_openai_service() and set_llm_service().
+    
+    Args:
+        api_key: Azure OpenAI API key
+        endpoint: Azure OpenAI endpoint URL
+        model: Model deployment name
+        api_version: Azure OpenAI API version
+        tenant_id: Azure tenant ID (optional)
+        proxy_config: Proxy configuration dict (optional)
+    
+    Example:
+        configure_and_set_azure_openai(
+            api_key="your-api-key",
+            endpoint="https://your-resource.openai.azure.com/",
+            model="gpt-4"
+        )
+    """
+    service = configure_azure_openai_service(
+        api_key=api_key,
+        endpoint=endpoint,
+        model=model,
+        api_version=api_version,
+        tenant_id=tenant_id,
+        proxy_config=proxy_config
+    )
+    set_llm_service(service)
+    logger.info("Azure OpenAI service set as global LLM service")
 
 
 def reset_llm_service():
