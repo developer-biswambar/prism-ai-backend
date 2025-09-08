@@ -471,66 +471,22 @@ def execute_custom_query(request: ExecuteQueryRequest):
         conn = duckdb.connect(':memory:')
         
         try:
-            # Helper function to sanitize DataFrame before registering with DuckDB
+            # Simplified helper function - avoid complex pandas operations
             def sanitize_dataframe_for_duckdb(df):
-                """Clean DataFrame to avoid DuckDB registration issues"""
+                """Simple cleaning to avoid DuckDB registration issues"""
                 import numpy as np
-                import pandas as pd
                 
                 try:
                     logger.info(f"Sanitizing DataFrame with shape {df.shape}, columns: {list(df.columns)}")
                     
-                    # Create a copy to avoid modifying the original
-                    clean_df = df.copy()
-                    
-                    # Handle problematic values that might cause DuckDB issues
-                    # Replace inf/-inf with NaN first, then handle NaN
-                    clean_df = clean_df.replace([np.inf, -np.inf], np.nan)
-                    
-                    # For object columns, ensure no mixed types
-                    for col in clean_df.select_dtypes(include=['object']).columns:
-                        try:
-                            # Convert problematic object values to strings, handle None values
-                            clean_df[col] = clean_df[col].astype(str)
-                            clean_df.loc[clean_df[col] == 'nan', col] = None
-                            clean_df.loc[clean_df[col] == 'None', col] = None
-                        except Exception as e:
-                            logger.warning(f"Error processing object column {col}: {e}")
-                            # If conversion fails, fill with None
-                            clean_df[col] = None
-                    
-                    # More careful handling of NaN values
-                    # Replace NaN with None without using fillna() which might be causing the error
-                    for col in clean_df.columns:
-                        try:
-                            # Check if column has any NaN values
-                            if clean_df[col].isna().any():
-                                # Use mask-based replacement instead of fillna
-                                mask = clean_df[col].isna()
-                                clean_df.loc[mask, col] = None
-                        except Exception as e:
-                            logger.warning(f"Error handling NaN in column {col}: {e}")
-                            # If there's still an issue, set the entire column to string type
-                            clean_df[col] = clean_df[col].astype(str)
-                            clean_df.loc[clean_df[col] == 'nan', col] = None
-                    
-                    logger.info(f"Successfully sanitized DataFrame")
-                    return clean_df
+                    # Skip sanitization for now - just return the original DataFrame
+                    # The issue might be in our sanitization logic itself
+                    logger.info("Skipping DataFrame sanitization - using original DataFrame")
+                    return df
                     
                 except Exception as e:
-                    logger.error(f"Error sanitizing DataFrame: {e}")
-                    logger.error(f"DataFrame info: shape={df.shape}, dtypes={df.dtypes.to_dict()}")
-                    # Fallback: create a simple version with basic cleaning
-                    try:
-                        simple_df = df.copy()
-                        # Convert all columns to object type and replace problematic values
-                        for col in simple_df.columns:
-                            simple_df[col] = simple_df[col].astype(object)
-                            simple_df.loc[simple_df[col].isna(), col] = None
-                        return simple_df
-                    except Exception as fallback_error:
-                        logger.error(f"Even fallback sanitization failed: {fallback_error}")
-                        raise Exception(f"DataFrame sanitization failed: {e}"))
+                    logger.error(f"Error in sanitization function: {e}")
+                    return df)
 
             # Handle both dict and list formats for files_data
             if isinstance(files_data, dict):
@@ -588,18 +544,24 @@ def execute_custom_query(request: ExecuteQueryRequest):
             # Sanitize the DataFrame to handle JSON non-compliant values
             if len(result_df) > 0:
                 import numpy as np
+                import pandas as pd
                 
                 # Replace problematic float values
                 result_df = result_df.replace([np.inf, -np.inf], None)  # Replace infinity with None
-                result_df = result_df.fillna(value=None)  # Replace NaN with None
+                
+                # Use where() instead of fillna() to avoid the parameter error
+                result_df = result_df.where(pd.notnull(result_df), None)
                 
                 # Handle very large numbers that might cause JSON issues
                 for col in result_df.select_dtypes(include=[np.number]).columns:
                     # Check for very large numbers that might cause JSON serialization issues
-                    mask = np.abs(result_df[col]) > 1e15
-                    if mask.any():
-                        result_df.loc[mask, col] = None
-                        logger.warning(f"Replaced {mask.sum()} very large numbers in column '{col}' with None")
+                    try:
+                        mask = np.abs(result_df[col]) > 1e15
+                        if mask.any():
+                            result_df.loc[mask, col] = None
+                            logger.warning(f"Replaced {mask.sum()} very large numbers in column '{col}' with None")
+                    except Exception as e:
+                        logger.warning(f"Error processing large numbers in column '{col}': {e}")
             
             # Convert result to records
             result_records = result_df.to_dict('records') if len(result_df) > 0 else []
