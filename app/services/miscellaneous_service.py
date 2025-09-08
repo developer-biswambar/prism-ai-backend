@@ -450,7 +450,8 @@ IMPORTANT: Return your response in the exact JSON format specified in the system
                 context_parts.append(col_desc)
             
             # Add a summary line with all column names for easy reference
-            context_parts.append(f"\n💡 Column reference for {table_name}: {', '.join([f'\\"{col}\\"' for col in column_names])}")
+            quoted_cols = [f'"{col}"' for col in column_names]
+            context_parts.append(f"\n💡 Column reference for {table_name}: {', '.join(quoted_cols)}")
             
             # Add sample data if available
             if sample_data and table_name in sample_data:
@@ -505,28 +506,30 @@ IMPORTANT: Return your response in the exact JSON format specified in the system
                 ]
                 
                 if similar_cols:
-                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(f\'"{c}"\' for c in similar_cols)}?')
-                    suggestions.append(f'Replace "{col}" with one of: {", ".join(f\'"{c}"\' for c in similar_cols)}')
+                    quoted_similar = [f'"{c}"' for c in similar_cols]
+                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(quoted_similar)}?')
+                    suggestions.append(f'Replace "{col}" with one of: {", ".join(quoted_similar)}')
                 else:
                     issues.append(f'Column "{col}" does not exist in any table.')
-                    suggestions.append(f'Available columns: {", ".join(f\'"{c}"\' for c in sorted(valid_columns))}')
+                    quoted_available = [f'"{c}"' for c in sorted(valid_columns)]
+                    suggestions.append(f'Available columns: {", ".join(quoted_available)}')
         
-        # Check for common problematic patterns
+        # Check for common problematic patterns (only as standalone quoted strings)
         problematic_patterns = [
-            ('Account Name', ['Sub Account Number', 'Security Account Number']),
-            ('account_name', ['sub_account_number', 'security_account_number']),
-            ('Name', ['Sub Account Number', 'Security Account Number']),
-            ('Account', ['Sub Account Number', 'Security Account Number'])
+            ('"Account Name"', ['Sub Account Number', 'Security Account Number']),
+            ('"account name"', ['Sub Account Number', 'Security Account Number']),
+            ('"Name"', ['Sub Account Number', 'Security Account Number'])
         ]
         
-        sql_lower = sql_query.lower()
         for pattern, alternatives in problematic_patterns:
-            if pattern.lower() in sql_lower:
+            if pattern.lower() in sql_query.lower():
                 # Check if any of the alternatives exist in our schema
                 existing_alternatives = [alt for alt in alternatives if alt.lower() in valid_columns]
                 if existing_alternatives:
-                    issues.append(f'"{pattern}" not found in schema.')
-                    suggestions.append(f'Try using: {", ".join(f\'"{alt}"\' for alt in existing_alternatives)}')
+                    clean_pattern = pattern.strip('"')
+                    issues.append(f'"{clean_pattern}" not found in schema.')
+                    quoted_alternatives = [f'"{alt}"' for alt in existing_alternatives]
+                    suggestions.append(f'Try using: {", ".join(quoted_alternatives)}')
         
         if issues:
             return {
