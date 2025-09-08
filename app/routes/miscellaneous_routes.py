@@ -546,25 +546,53 @@ def execute_custom_query(request: ExecuteQueryRequest):
                 import numpy as np
                 import pandas as pd
                 
-                # Replace problematic float values
-                result_df = result_df.replace([np.inf, -np.inf], None)  # Replace infinity with None
+                # More aggressive cleaning for JSON compliance
+                try:
+                    # Replace all problematic float values
+                    result_df = result_df.replace([np.inf, -np.inf, np.nan], None)
+                    
+                    # Double-check: use where() to catch any remaining NaN/null values
+                    result_df = result_df.where(pd.notnull(result_df), None)
+                    
+                    # Handle very large numbers that might cause JSON issues
+                    for col in result_df.select_dtypes(include=[np.number]).columns:
+                        try:
+                            # Replace any remaining NaN values in numeric columns
+                            mask = pd.isna(result_df[col])
+                            if mask.any():
+                                result_df.loc[mask, col] = None
+                                logger.info(f"Replaced {mask.sum()} NaN values in column '{col}' with None")
+                            
+                            # Check for very large numbers
+                            finite_mask = pd.notna(result_df[col]) & np.isfinite(result_df[col].astype(float, errors='ignore'))
+                            large_mask = finite_mask & (np.abs(result_df[col]) > 1e15)
+                            if large_mask.any():
+                                result_df.loc[large_mask, col] = None
+                                logger.warning(f"Replaced {large_mask.sum()} very large numbers in column '{col}' with None")
+                        except Exception as e:
+                            logger.warning(f"Error processing numeric column '{col}': {e}")
+                            # If there's still an issue, convert the entire column to string then None
+                            result_df[col] = result_df[col].astype(str).replace(['nan', 'NaN', 'None', '<NA>'], None)
                 
-                # Use where() instead of fillna() to avoid the parameter error
-                result_df = result_df.where(pd.notnull(result_df), None)
-                
-                # Handle very large numbers that might cause JSON issues
-                for col in result_df.select_dtypes(include=[np.number]).columns:
-                    # Check for very large numbers that might cause JSON serialization issues
-                    try:
-                        mask = np.abs(result_df[col]) > 1e15
-                        if mask.any():
-                            result_df.loc[mask, col] = None
-                            logger.warning(f"Replaced {mask.sum()} very large numbers in column '{col}' with None")
-                    except Exception as e:
-                        logger.warning(f"Error processing large numbers in column '{col}': {e}")
+                except Exception as e:
+                    logger.error(f"Error in DataFrame sanitization: {e}")
             
-            # Convert result to records
-            result_records = result_df.to_dict('records') if len(result_df) > 0 else []
+            # Convert result to records with additional safety check
+            if len(result_df) > 0:
+                try:
+                    result_records = result_df.to_dict('records')
+                    # Final safety check - manually clean any remaining problematic values
+                    import math
+                    for record in result_records:
+                        for key, value in record.items():
+                            if isinstance(value, float):
+                                if math.isnan(value) or math.isinf(value):
+                                    record[key] = None
+                except Exception as e:
+                    logger.error(f"Error converting DataFrame to records: {e}")
+                    result_records = []
+            else:
+                result_records = []
             
             # Calculate basic statistics
             row_count = len(result_records)
