@@ -651,7 +651,11 @@ class MiscellaneousProcessor:
                         'error': f"Failed to generate SQL: {sql_result.get('error', 'Unknown error')}",
                         'generated_sql': None,
                         'data': [],
-                        'warnings': ["Could not generate SQL from natural language prompt"]
+                        'warnings': ["Could not generate SQL from natural language prompt"],
+                        'errors': [sql_result.get('error', 'Unknown error')],
+                        # Store source data and schemas even on failure for execute query functionality
+                        'files_data': files_data,  # Original dataframes and metadata
+                        'table_schemas': table_schemas  # Table schemas for validation
                     }
                 
                 generated_sql = sql_result['sql_query']
@@ -669,7 +673,10 @@ class MiscellaneousProcessor:
                         'generated_sql': generated_sql,
                         'data': [],
                         'warnings': column_validation['suggestions'],
-                        'errors': [column_validation['error']]
+                        'errors': [column_validation['error']],
+                        # Store source data and schemas even on failure for execute query functionality
+                        'files_data': files_data,  # Original dataframes and metadata
+                        'table_schemas': table_schemas  # Table schemas for validation
                     }
                 
                 # Execute the query
@@ -723,11 +730,16 @@ class MiscellaneousProcessor:
                         'generated_sql': generated_sql,
                         'data': [],
                         'warnings': ["Query generated successfully but execution failed"],
-                        'errors': [str(e)]
+                        'errors': [str(e)],
+                        # Store source data and schemas even on failure for execute query functionality
+                        'files_data': files_data,  # Original dataframes and metadata
+                        'table_schemas': table_schemas  # Table schemas for validation
                     }
                     
         except Exception as e:
             logger.error(f"Processing failed: {e}")
+            # Note: For top-level failures, we may not have files_data/table_schemas available
+            # In this case, execute query won't work, but that's expected for processing failures
             return {
                 'success': False,
                 'error': f"Processing failed: {str(e)}",
