@@ -428,32 +428,118 @@ IMPORTANT: Return your response in the exact JSON format specified in the system
     ) -> str:
         """Build context string describing available tables"""
         context_parts = []
+        context_parts.append("AVAILABLE TABLES AND COLUMNS (USE EXACT NAMES ONLY):")
+        context_parts.append("=" * 60)
         
         for table_name, schema in table_schemas.items():
-            context_parts.append(f"\nTable: {table_name}")
-            context_parts.append("Columns:")
+            context_parts.append(f"\n📁 Table: {table_name}")
+            context_parts.append("📋 Available columns (EXACT NAMES - copy these exactly):")
             
+            column_names = []
             for col_info in schema:
-                col_desc = f"  - {col_info['column_name']} ({col_info['column_type']})"
+                col_name = col_info['column_name']
+                column_names.append(col_name)
+                col_desc = f'  ✓ "{col_name}" ({col_info["column_type"]})'
                 if not col_info.get('null', True):
                     col_desc += " NOT NULL"
                 
                 # Add special note for date columns
-                if 'date' in col_info['column_name'].lower() and col_info['column_type'] in ['VARCHAR', 'STRING']:
+                if 'date' in col_name.lower() and col_info['column_type'] in ['VARCHAR', 'STRING']:
                     col_desc += " [DATE STRING - use CAST(column AS DATE) for date functions]"
                 
                 context_parts.append(col_desc)
+            
+            # Add a summary line with all column names for easy reference
+            context_parts.append(f"\n💡 Column reference for {table_name}: {', '.join([f'\\"{col}\\"' for col in column_names])}")
             
             # Add sample data if available
             if sample_data and table_name in sample_data:
                 df = sample_data[table_name]
                 if len(df) > 0:
-                    context_parts.append(f"Sample values (first 3 rows):")
+                    context_parts.append(f"\n📊 Sample values (first 3 rows):")
                     for col in df.columns[:5]:  # Show up to 5 columns
                         sample_vals = df[col].head(3).tolist()
-                        context_parts.append(f"  {col}: {sample_vals}")
+                        context_parts.append(f'  "{col}": {sample_vals}')
+        
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("⚠️  WARNING: Use ONLY the exact column names listed above. Do NOT guess or assume column names!")
         
         return "\n".join(context_parts)
+    
+    def _validate_column_references(self, sql_query: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Validate that all column references in the SQL query exist in the table schemas
+        Returns dict with 'valid', 'error', and 'suggestions' keys
+        """
+        import re
+        
+        # Extract all column references from SQL (quoted and unquoted)
+        # This is a basic validation - could be enhanced with proper SQL parsing
+        
+        # Collect all valid column names from all tables
+        valid_columns = set()
+        table_columns = {}
+        
+        for table_name, schema in table_schemas.items():
+            table_columns[table_name] = []
+            for col_info in schema:
+                col_name = col_info['column_name']
+                valid_columns.add(col_name.lower())
+                table_columns[table_name].append(col_name)
+        
+        # Find potential column references in the SQL
+        # Look for quoted column names and common SQL patterns
+        quoted_columns = re.findall(r'"([^"]+)"', sql_query)
+        word_patterns = re.findall(r'\b(\w+(?:\s+\w+)*)\b', sql_query)
+        
+        issues = []
+        suggestions = []
+        
+        # Check quoted column references
+        for col in quoted_columns:
+            if col.lower() not in valid_columns and col.lower() not in ['file_0', 'file_1', 'select', 'from', 'where', 'and', 'or']:
+                # Look for similar column names
+                similar_cols = [
+                    valid_col for valid_col in valid_columns 
+                    if col.lower() in valid_col.lower() or valid_col.lower() in col.lower()
+                ]
+                
+                if similar_cols:
+                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(f\'"{c}"\' for c in similar_cols)}?')
+                    suggestions.append(f'Replace "{col}" with one of: {", ".join(f\'"{c}"\' for c in similar_cols)}')
+                else:
+                    issues.append(f'Column "{col}" does not exist in any table.')
+                    suggestions.append(f'Available columns: {", ".join(f\'"{c}"\' for c in sorted(valid_columns))}')
+        
+        # Check for common problematic patterns
+        problematic_patterns = [
+            ('Account Name', ['Sub Account Number', 'Security Account Number']),
+            ('account_name', ['sub_account_number', 'security_account_number']),
+            ('Name', ['Sub Account Number', 'Security Account Number']),
+            ('Account', ['Sub Account Number', 'Security Account Number'])
+        ]
+        
+        sql_lower = sql_query.lower()
+        for pattern, alternatives in problematic_patterns:
+            if pattern.lower() in sql_lower:
+                # Check if any of the alternatives exist in our schema
+                existing_alternatives = [alt for alt in alternatives if alt.lower() in valid_columns]
+                if existing_alternatives:
+                    issues.append(f'"{pattern}" not found in schema.')
+                    suggestions.append(f'Try using: {", ".join(f\'"{alt}"\' for alt in existing_alternatives)}')
+        
+        if issues:
+            return {
+                'valid': False,
+                'error': '; '.join(issues),
+                'suggestions': suggestions
+            }
+        
+        return {
+            'valid': True,
+            'error': None,
+            'suggestions': []
+        }
 
 
 # Shared storage for results (class-level storage)
@@ -553,6 +639,18 @@ class MiscellaneousProcessor:
                 # Skip safety validation for in-memory database operations
                 # All tables are user-uploaded files, no security risk
                 logger.info("Skipping SQL safety validation for in-memory database")
+                
+                # Validate column references in the generated SQL
+                column_validation = self._validate_column_references(generated_sql, table_schemas)
+                if not column_validation['valid']:
+                    return {
+                        'success': False,
+                        'error': f"Column reference error: {column_validation['error']}",
+                        'generated_sql': generated_sql,
+                        'data': [],
+                        'warnings': column_validation['suggestions'],
+                        'errors': [column_validation['error']]
+                    }
                 
                 # Execute the query
                 try:
