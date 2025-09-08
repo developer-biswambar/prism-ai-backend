@@ -287,17 +287,22 @@ class AIQueryGenerator:
 
 ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
 
-IMPORTANT RULES:
-1. Use any SQL operations needed: SELECT, WITH, CREATE TEMP TABLE, etc.
-2. ONLY reference tables and columns that EXACTLY match the provided schema - NO guessing or assumptions
-3. Use proper SQL syntax compatible with DuckDB
-4. For joins, use explicit JOIN syntax with clear conditions
-5. Use appropriate aggregate functions for summaries
-6. Include column aliases for clarity
-7. ALWAYS return response in JSON format with "sql_query" field - no explanations or markdown formatting
-8. Handle complex data extraction, transformation, and analysis tasks
+CRITICAL COLUMN USAGE RULES:
+1. NEVER use column names that are not explicitly listed in the schema below
+2. NEVER guess or assume column names based on user descriptions
+3. ALWAYS copy column names EXACTLY as shown in quotes from the schema
+4. If user mentions a concept (like "account name") that doesn't match any column, find the best matching actual column
+5. Use proper SQL syntax compatible with DuckDB
+6. For joins, use explicit JOIN syntax with clear conditions
+7. ALWAYS return response in JSON format with "sql_query" field
+8. If uncertain about columns, explain in the description field what assumptions you made
 
-CRITICAL: If a column name is mentioned in the user request but doesn't exist in the schema, use the closest matching column name from the actual schema or ask for clarification in the description field.
+COLUMN MATCHING STRATEGY:
+- User says "account name" → Look for columns containing "account" or "name"
+- User says "date" → Look for columns containing "date" 
+- User says "amount" → Look for columns containing "amount" or "value"
+- User says "ID" → Look for columns containing "id", "number", or "code"
+- NEVER create non-existent column names
 
 RESPONSE FORMAT (CRITICAL):
 {
@@ -339,18 +344,23 @@ COMPLEX TEXT PROCESSING:
 - Handle messy data with TRIM, UPPER, LOWER, REPLACE functions"""
 
         user_message = f"""
-Available Tables and Schema:
 {tables_context}
 
-User Request: {user_prompt}
+🎯 USER REQUEST: {user_prompt}
 
-Generate a SQL query that fulfills this request. Use only the tables and columns shown above.
+🚨 CRITICAL REMINDERS:
+- Use ONLY the exact column names listed above (copy them exactly with quotes)
+- Do NOT create or guess column names
+- If user mentions concepts not in columns, map to closest actual column
+- Explain any column mapping assumptions in the description field
 
-IMPORTANT: Return your response in the exact JSON format specified in the system prompt:
+Generate a SQL query using ONLY the columns shown above.
+
+REQUIRED JSON RESPONSE FORMAT:
 {{
-  "sql_query": "YOUR_SQL_QUERY_HERE",
-  "query_type": "appropriate_type",
-  "description": "brief description"
+  "sql_query": "YOUR_SQL_QUERY_USING_ONLY_LISTED_COLUMNS",
+  "query_type": "data_analysis|reconciliation|aggregation|join|filter",
+  "description": "What the query does and any column assumptions made"
 }}
 """
 
@@ -544,9 +554,13 @@ class MiscellaneousProcessor:
                 
                 logger.info(f"Parallel file processing completed for {len(files_data)} files")
                 
+                # Pre-process user prompt to provide column hints
+                enhanced_prompt = self._enhance_user_prompt_with_column_hints(user_prompt, table_schemas)
+                logger.info(f"Enhanced prompt: {enhanced_prompt}")
+                
                 # Generate SQL from natural language
                 sql_result = self.ai_generator.generate_sql_from_prompt(
-                    user_prompt=user_prompt,
+                    user_prompt=enhanced_prompt,
                     table_schemas=table_schemas,
                     sample_data=sample_data
                 )
@@ -691,20 +705,37 @@ class MiscellaneousProcessor:
         # Check quoted column references
         for col in quoted_columns:
             if col.lower() not in valid_columns and col.lower() not in ['file_0', 'file_1', 'select', 'from', 'where', 'and', 'or']:
-                # Look for similar column names
-                similar_cols = [
-                    valid_col for valid_col in valid_columns 
-                    if col.lower() in valid_col.lower() or valid_col.lower() in col.lower()
-                ]
+                # Look for similar column names using multiple matching strategies
+                exact_matches = [c for c in valid_columns if col.lower() == c.lower()]
+                partial_matches = [c for c in valid_columns if col.lower() in c.lower() or c.lower() in col.lower()]
+                word_matches = []
                 
-                if similar_cols:
-                    quoted_similar = [f'"{c}"' for c in similar_cols]
-                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(quoted_similar)}?')
-                    suggestions.append(f'Replace "{col}" with one of: {", ".join(quoted_similar)}')
+                # Word-based matching for compound names
+                col_words = col.lower().split()
+                for valid_col in valid_columns:
+                    valid_words = valid_col.lower().split()
+                    if any(word in valid_words for word in col_words):
+                        word_matches.append(valid_col)
+                
+                # Combine and prioritize matches
+                all_matches = list(dict.fromkeys(exact_matches + partial_matches + word_matches))
+                
+                if all_matches:
+                    quoted_matches = [f'"{c}"' for c in all_matches[:3]]  # Limit to top 3
+                    issues.append(f'❌ Column "{col}" does not exist.')
+                    suggestions.append(f'💡 Did you mean: {", ".join(quoted_matches)}?')
                 else:
-                    issues.append(f'Column "{col}" does not exist in any table.')
-                    quoted_available = [f'"{c}"' for c in sorted(valid_columns)]
-                    suggestions.append(f'Available columns: {", ".join(quoted_available)}')
+                    issues.append(f'❌ Column "{col}" does not exist in any table.')
+                    
+                    # Show available columns organized by table
+                    table_info = []
+                    for table_name, schema in table_schemas.items():
+                        cols = [f'"{info["column_name"]}"' for info in schema]
+                        table_info.append(f'{table_name}: {", ".join(cols)}')
+                    
+                    suggestions.append(f'📋 Available columns by table:')
+                    for info in table_info:
+                        suggestions.append(f'   • {info}')
         
         # Check for common problematic patterns (only as standalone quoted strings)
         problematic_patterns = [
@@ -735,6 +766,56 @@ class MiscellaneousProcessor:
             'error': None,
             'suggestions': []
         }
+    
+    def _enhance_user_prompt_with_column_hints(self, user_prompt: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> str:
+        """
+        Enhance user prompt with explicit column hints to guide AI toward correct column usage
+        """
+        # Common problematic terms and their likely intended columns
+        column_mappings = {
+            'account name': ['Sub Account Number', 'Security Account Number', 'Account Name'],
+            'account number': ['Sub Account Number', 'Security Account Number', 'Account Number'],
+            'account': ['Sub Account Number', 'Security Account Number'],
+            'name': ['Sub Account Number', 'Security Account Number'],
+            'amount': ['Income Amount (Gross)', 'Amount', 'Value'],
+            'date': ['Value Date', 'Pay Date', 'Date'],
+            'currency': ['Cash Account Ccyl', 'Currency', 'Ccy'],
+            'tax': ['Source Tax Cust', 'Tax', 'Withholding Tax'],
+            'isin': ['ISIN', 'ISIn', 'Security ID'],
+            'security': ['Security Account Number', 'ISIN', 'Security ID']
+        }
+        
+        # Collect all available columns
+        all_columns = []
+        for table_name, schema in table_schemas.items():
+            for col_info in schema:
+                all_columns.append(col_info['column_name'])
+        
+        # Find matches and create hints
+        hints = []
+        enhanced_prompt = user_prompt.lower()
+        
+        for term, possible_columns in column_mappings.items():
+            if term in enhanced_prompt:
+                # Find actual matches in the available columns
+                actual_matches = []
+                for col in all_columns:
+                    col_lower = col.lower()
+                    if any(possible.lower() in col_lower or col_lower in possible.lower() 
+                          for possible in possible_columns):
+                        actual_matches.append(col)
+                
+                if actual_matches:
+                    # Add hint to the original prompt
+                    quoted_matches = [f'"{col}"' for col in actual_matches[:2]]
+                    hints.append(f'When you see "{term}", use column(s): {", ".join(quoted_matches)}')
+        
+        # If we found hints, append them to the original prompt
+        if hints:
+            enhanced = f"{user_prompt}\n\n[COLUMN HINTS: {' | '.join(hints)}]"
+            return enhanced
+        
+        return user_prompt
     
     def store_results(self, process_id: str, result_data: Dict[str, Any]):
         """Store processing results"""
