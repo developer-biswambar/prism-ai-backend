@@ -282,8 +282,12 @@ class AIQueryGenerator:
         # Build context about available tables
         tables_context = self._build_tables_context(table_schemas, sample_data)
         
-        # Create the prompt for SQL generation
-        system_prompt = """You are an expert SQL analyst specializing in DuckDB. Generate powerful SQL queries for in-memory data analysis.
+        # Create the prompt for SQL generation with enhanced capabilities
+        system_prompt = """You are an expert data analyst and SQL specialist with advanced capabilities in:
+1. RECONCILIATION: Multi-file matching, pattern extraction, tolerance matching, fuzzy matching
+2. TRANSFORMATION: Data cleaning, restructuring, derivation, aggregation
+3. DELTA ANALYSIS: Change detection, record comparison, difference tracking
+4. DATA ANALYSIS: Complex queries, joins, aggregations, filtering
 
 ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
 
@@ -297,12 +301,48 @@ CRITICAL COLUMN USAGE RULES:
 7. ALWAYS return response in JSON format with "sql_query" field
 8. If uncertain about columns, explain in the description field what assumptions you made
 
+ADVANCED ANALYSIS CAPABILITIES:
+
+🔍 RECONCILIATION OPERATIONS:
+- Multi-file matching: Use FULL OUTER JOIN to find matched/unmatched records
+- Pattern extraction: Use REGEXP_EXTRACT() for extracting patterns from text
+- Tolerance matching: Use ABS(value1 - value2) <= tolerance for numeric comparisons
+- Fuzzy matching: Use SIMILARITY() or LEVENSHTEIN() for text similarity
+- Date matching: Use CAST(column AS DATE) for proper date comparisons
+- Key generation: Create composite keys using CONCAT() or ||
+
+🔧 TRANSFORMATION OPERATIONS:  
+- Data cleaning: Use TRIM(), UPPER(), LOWER(), REPLACE(), REGEXP_REPLACE()
+- Type conversion: Use CAST(), TRY_CAST(), STRPTIME() for date parsing
+- Derivation: Create calculated columns with CASE WHEN, mathematical operations
+- Aggregation: Use GROUP BY with SUM(), COUNT(), AVG(), MIN(), MAX()
+- Pivoting: Use PIVOT/UNPIVOT or conditional aggregation
+- String manipulation: SPLIT(), SUBSTRING(), LENGTH(), POSITION()
+
+📊 DELTA ANALYSIS:
+- Change detection: Use EXCEPT, INTERSECT, or FULL OUTER JOIN with COALESCE
+- Record comparison: Compare before/after states with indicator columns
+- Field-level changes: Track specific column changes with CASE statements
+- Summary statistics: Count additions, deletions, modifications
+- Change tracking: Use LAG(), LEAD() window functions for sequential analysis
+
 COLUMN MATCHING STRATEGY:
 - User says "account name" → Look for columns containing "account" or "name"
 - User says "date" → Look for columns containing "date" 
 - User says "amount" → Look for columns containing "amount" or "value"
 - User says "ID" → Look for columns containing "id", "number", or "code"
+- User says "reconcile/match" → Look for key fields like IDs, references, amounts
+- User says "compare/delta" → Create comparison logic between files
+- User says "transform/clean" → Apply data manipulation operations
 - NEVER create non-existent column names
+
+QUERY TYPE CLASSIFICATION:
+- "reconciliation": Multi-file matching, tolerance comparisons, pattern extraction
+- "transformation": Data cleaning, restructuring, calculated fields  
+- "delta_analysis": Change detection, before/after comparison
+- "aggregation": Grouping, summarization, statistical analysis
+- "join": Multi-file analysis, data combination
+- "filter": Conditional selection, data subsetting
 
 RESPONSE FORMAT (CRITICAL):
 {
@@ -346,7 +386,7 @@ COMPLEX TEXT PROCESSING:
         user_message = f"""
 {tables_context}
 
-🎯 USER REQUEST: {user_prompt}
+🎯 USER REQUEST: {enhanced_prompt}
 
 🚨 CRITICAL REMINDERS:
 - Use ONLY the exact column names listed above (copy them exactly with quotes)
@@ -354,12 +394,52 @@ COMPLEX TEXT PROCESSING:
 - If user mentions concepts not in columns, map to closest actual column
 - Explain any column mapping assumptions in the description field
 
+📚 ADVANCED EXAMPLES FOR COMPLEX OPERATIONS:
+
+🔍 RECONCILIATION EXAMPLE:
+-- Multi-file matching with tolerance for amounts
+WITH matched AS (
+  SELECT f1.*, f2.*, 
+         CASE WHEN ABS(f1."Amount" - f2."Value") <= 0.01 THEN 'MATCHED' ELSE 'TOLERANCE_MISMATCH' END as match_status
+  FROM file_0 f1 
+  FULL OUTER JOIN file_1 f2 ON f1."ID" = f2."Reference_ID"
+)
+SELECT * FROM matched WHERE match_status = 'MATCHED';
+
+🔧 TRANSFORMATION EXAMPLE:
+-- Clean and derive new fields
+SELECT 
+    TRIM(UPPER("Customer_Name")) as clean_name,
+    CAST("Date_String" AS DATE) as parsed_date,
+    "Revenue" - "Cost" as profit_margin,
+    CASE WHEN "Amount" > 1000 THEN 'HIGH' ELSE 'LOW' END as category,
+    REGEXP_EXTRACT("Account", '[0-9]+') as account_number
+FROM file_0;
+
+📊 DELTA ANALYSIS EXAMPLE:
+-- Compare two datasets for changes
+WITH comparison AS (
+  SELECT 
+    COALESCE(f1."ID", f2."ID") as id,
+    f1."Amount" as old_amount,
+    f2."Amount" as new_amount,
+    f2."Amount" - f1."Amount" as amount_change,
+    CASE 
+      WHEN f1."ID" IS NULL THEN 'NEWLY_ADDED'
+      WHEN f2."ID" IS NULL THEN 'DELETED' 
+      WHEN f1."Amount" != f2."Amount" THEN 'AMENDED'
+      ELSE 'UNCHANGED'
+    END as change_type
+  FROM file_0 f1 FULL OUTER JOIN file_1 f2 ON f1."ID" = f2."ID"
+)
+SELECT * FROM comparison WHERE change_type != 'UNCHANGED';
+
 Generate a SQL query using ONLY the columns shown above.
 
 REQUIRED JSON RESPONSE FORMAT:
 {{
   "sql_query": "YOUR_SQL_QUERY_USING_ONLY_LISTED_COLUMNS",
-  "query_type": "data_analysis|reconciliation|aggregation|join|filter",
+  "query_type": "reconciliation|transformation|delta_analysis|aggregation|join|filter|data_analysis",
   "description": "What the query does and any column assumptions made"
 }}
 """
@@ -655,10 +735,17 @@ class MiscellaneousProcessor:
             }
     
     def _classify_query_type(self, sql_query: str) -> str:
-        """Classify the type of SQL query"""
+        """Classify the type of SQL query with enhanced categories"""
         sql_upper = sql_query.upper()
         
-        if 'JOIN' in sql_upper:
+        # Advanced pattern detection
+        if any(pattern in sql_upper for pattern in ['FULL OUTER JOIN', 'COALESCE', 'TOLERANCE_MISMATCH', 'MATCHED']):
+            return "reconciliation"
+        elif any(pattern in sql_upper for pattern in ['NEWLY_ADDED', 'DELETED', 'AMENDED', 'UNCHANGED', 'CHANGE_TYPE']):
+            return "delta_analysis"
+        elif any(pattern in sql_upper for pattern in ['REGEXP_EXTRACT', 'TRIM', 'UPPER', 'LOWER', 'CAST', 'REGEXP_REPLACE']):
+            return "transformation"
+        elif 'FULL OUTER JOIN' in sql_upper or 'LEFT JOIN' in sql_upper or 'RIGHT JOIN' in sql_upper:
             return "join_operation"
         elif any(agg in sql_upper for agg in ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']):
             return "aggregation"
@@ -671,7 +758,7 @@ class MiscellaneousProcessor:
         elif 'WITH' in sql_upper:
             return "complex_query"
         else:
-            return "simple_select"
+            return "data_analysis"
     
     def _validate_column_references(self, sql_query: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
@@ -766,6 +853,52 @@ class MiscellaneousProcessor:
             'error': None,
             'suggestions': []
         }
+    
+    def _build_tables_context(
+        self, 
+        table_schemas: Dict[str, List[Dict[str, Any]]], 
+        sample_data: Dict[str, pd.DataFrame] = None
+    ) -> str:
+        """Build context string describing available tables"""
+        context_parts = []
+        context_parts.append("AVAILABLE TABLES AND COLUMNS (USE EXACT NAMES ONLY):")
+        context_parts.append("=" * 60)
+        
+        for table_name, schema in table_schemas.items():
+            context_parts.append(f"\n📁 Table: {table_name}")
+            context_parts.append("📋 Available columns (EXACT NAMES - copy these exactly):")
+            
+            column_names = []
+            for col_info in schema:
+                col_name = col_info['column_name']
+                column_names.append(col_name)
+                col_desc = f'  ✓ "{col_name}" ({col_info["column_type"]})'
+                if not col_info.get('null', True):
+                    col_desc += " NOT NULL"
+                
+                # Add special note for date columns
+                if 'date' in col_name.lower() and col_info['column_type'] in ['VARCHAR', 'STRING']:
+                    col_desc += " [DATE STRING - use CAST(column AS DATE) for date functions]"
+                
+                context_parts.append(col_desc)
+            
+            # Add a summary line with all column names for easy reference
+            quoted_cols = [f'"{col}"' for col in column_names]
+            context_parts.append(f"\n💡 Column reference for {table_name}: {', '.join(quoted_cols)}")
+            
+            # Add sample data if available
+            if sample_data and table_name in sample_data:
+                df = sample_data[table_name]
+                if len(df) > 0:
+                    context_parts.append(f"\n📊 Sample values (first 3 rows):")
+                    for col in df.columns[:5]:  # Show up to 5 columns
+                        sample_vals = df[col].head(3).tolist()
+                        context_parts.append(f'  "{col}": {sample_vals}')
+        
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append("⚠️  WARNING: Use ONLY the exact column names listed above. Do NOT guess or assume column names!")
+        
+        return "\n".join(context_parts)
     
     def _enhance_user_prompt_with_column_hints(self, user_prompt: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> str:
         """
