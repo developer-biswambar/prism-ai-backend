@@ -294,8 +294,15 @@ IMPORTANT RULES:
 4. For joins, use explicit JOIN syntax with clear conditions
 5. Use appropriate aggregate functions for summaries
 6. Include column aliases for clarity
-7. Return ONLY the SQL query, no explanations or markdown formatting
+7. ALWAYS return response in JSON format with "sql_query" field - no explanations or markdown formatting
 8. Handle complex data extraction, transformation, and analysis tasks
+
+RESPONSE FORMAT (CRITICAL):
+{
+  "sql_query": "YOUR_SQL_QUERY_HERE",
+  "query_type": "data_analysis|reconciliation|aggregation|join|filter|etc",
+  "description": "Brief description of what the query does"
+}
 
 DuckDB Advanced Features Available:
 - Window functions (ROW_NUMBER, RANK, LAG, LEAD, DENSE_RANK, etc.)
@@ -336,6 +343,13 @@ Available Tables and Schema:
 User Request: {user_prompt}
 
 Generate a SQL query that fulfills this request. Use only the tables and columns shown above.
+
+IMPORTANT: Return your response in the exact JSON format specified in the system prompt:
+{{
+  "sql_query": "YOUR_SQL_QUERY_HERE",
+  "query_type": "appropriate_type",
+  "description": "brief description"
+}}
 """
 
         try:
@@ -354,18 +368,48 @@ Generate a SQL query that fulfills this request. Use only the tables and columns
             if not response.success:
                 raise RuntimeError(f"SQL generation failed: {response.error}")
             
-            # Clean up the response (remove markdown formatting if present)
-            generated_sql = response.content.strip()
-            if generated_sql.startswith('```sql'):
-                generated_sql = generated_sql.replace('```sql', '').replace('```', '').strip()
-            elif generated_sql.startswith('```'):
-                generated_sql = generated_sql.replace('```', '').strip()
-            
-            return {
-                'sql_query': generated_sql,
-                'success': True,
-                'context_used': tables_context
-            }
+            # Parse JSON response from LLM
+            import json
+            try:
+                # The LLM service should have already extracted JSON using extract_json_string()
+                response_data = json.loads(response.content)
+                
+                # Extract SQL query from JSON response
+                generated_sql = response_data.get('sql_query', '')
+                query_type = response_data.get('query_type', 'unknown')
+                description = response_data.get('description', 'AI-generated SQL query')
+                
+                if not generated_sql:
+                    raise ValueError("No SQL query found in JSON response")
+                
+                return {
+                    'sql_query': generated_sql.strip(),
+                    'query_type': query_type,
+                    'description': description,
+                    'success': True,
+                    'context_used': tables_context
+                }
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response from LLM: {e}")
+                logger.error(f"Raw response content: {response.content}")
+                
+                # Fallback: try to extract SQL from raw response
+                raw_content = response.content.strip()
+                if raw_content.startswith('```sql'):
+                    generated_sql = raw_content.replace('```sql', '').replace('```', '').strip()
+                elif raw_content.startswith('```'):
+                    generated_sql = raw_content.replace('```', '').strip()
+                else:
+                    generated_sql = raw_content
+                
+                return {
+                    'sql_query': generated_sql,
+                    'query_type': 'unknown',
+                    'description': 'AI-generated SQL query (fallback parsing)',
+                    'success': True,
+                    'context_used': tables_context
+                }
             
         except Exception as e:
             logger.error(f"Failed to generate SQL: {e}")
@@ -540,7 +584,8 @@ class MiscellaneousProcessor:
                         'column_count': len(result_df.columns),
                         'processing_info': {
                             'input_files': len(files_data),
-                            'query_type': self._classify_query_type(generated_sql),
+                            'query_type': sql_result.get('query_type', self._classify_query_type(generated_sql)),
+                            'description': sql_result.get('description', ''),
                             'tables_used': list(table_schemas.keys())
                         },
                         'warnings': ['Results limited to first 100 rows for preview. Use "Open in Data Viewer" to see all results.'] if is_limited else [],
