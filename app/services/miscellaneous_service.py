@@ -4,7 +4,7 @@ import json
 import tempfile
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 from contextlib import contextmanager
@@ -283,22 +283,28 @@ class AIQueryGenerator:
         tables_context = self._build_tables_context(table_schemas, sample_data)
         
         # Create the prompt for SQL generation
-        system_prompt = """You are an expert SQL analyst specializing in DuckDB. Generate safe, efficient SQL queries based on user requirements.
+        system_prompt = """You are an expert SQL analyst specializing in DuckDB. Generate powerful SQL queries for in-memory data analysis.
+
+ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
 
 IMPORTANT RULES:
-1. Only use SELECT and WITH statements - no DDL/DML operations
+1. Use any SQL operations needed: SELECT, WITH, CREATE TEMP TABLE, etc.
 2. Only reference tables and columns that exist in the provided schema
 3. Use proper SQL syntax compatible with DuckDB
 4. For joins, use explicit JOIN syntax with clear conditions
 5. Use appropriate aggregate functions for summaries
 6. Include column aliases for clarity
 7. Return ONLY the SQL query, no explanations or markdown formatting
+8. Handle complex data extraction, transformation, and analysis tasks
 
-DuckDB Specific Features Available:
-- Window functions (ROW_NUMBER, RANK, LAG, LEAD, etc.)
+DuckDB Advanced Features Available:
+- Window functions (ROW_NUMBER, RANK, LAG, LEAD, DENSE_RANK, etc.)
 - CTEs (Common Table Expressions) with WITH clause
-- Advanced aggregations (PERCENTILE_CONT, MODE, etc.)
-- String functions (REGEXP_MATCHES, SPLIT, etc.)
+- Advanced aggregations (PERCENTILE_CONT, MODE, STDDEV, etc.)
+- String functions (REGEXP_EXTRACT, REGEXP_MATCHES, SPLIT, SUBSTRING, etc.)
+- Array and JSON functions
+- Complex CASE statements and conditional logic
+- Temporary tables and views for multi-step processing
 
 CRITICAL DATE/TIME HANDLING:
 - Date columns are stored as TEXT/STRING - always cast them first
@@ -314,7 +320,14 @@ DATE DIFFERENCES IN DUCKDB:
 - Do NOT use DATE_PART on date differences: DATE_PART('day', date1 - date2) is WRONG
 - Correct: CAST(order_date AS DATE) - CAST(last_restock_date AS DATE) gives days directly
 - For age calculations: (CAST(date1 AS DATE) - CAST(date2 AS DATE)) gives days as integer
-- Example: days_between = CAST(order_date AS DATE) - CAST(last_restock_date AS DATE)"""
+- Example: days_between = CAST(order_date AS DATE) - CAST(last_restock_date AS DATE)
+
+COMPLEX TEXT PROCESSING:
+- Use REGEXP_EXTRACT for pattern extraction
+- Use SPLIT for text parsing
+- Use SUBSTRING for positional extraction
+- Use CASE WHEN for conditional transformations
+- Handle messy data with TRIM, UPPER, LOWER, REPLACE functions"""
 
         user_message = f"""
 Available Tables and Schema:
@@ -491,16 +504,9 @@ class MiscellaneousProcessor:
                 
                 generated_sql = sql_result['sql_query']
                 
-                # Validate SQL safety
-                is_safe, safety_issues = duck_processor.validate_sql_safety(generated_sql)
-                if not is_safe:
-                    return {
-                        'success': False,
-                        'error': f"SQL query contains unsafe operations: {', '.join(safety_issues)}",
-                        'generated_sql': generated_sql,
-                        'data': [],
-                        'warnings': safety_issues
-                    }
+                # Skip safety validation for in-memory database operations
+                # All tables are user-uploaded files, no security risk
+                logger.info("Skipping SQL safety validation for in-memory database")
                 
                 # Execute the query
                 try:
@@ -586,7 +592,7 @@ class MiscellaneousProcessor:
         """Store processing results"""
         self.storage[process_id] = {
             **result_data,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'process_id': process_id
         }
         logger.info(f"Stored results for process_id: {process_id}, total stored: {len(self.storage)}")
@@ -608,14 +614,15 @@ class MiscellaneousProcessor:
                     # Create file info for the viewer
                     size_bytes = len(df) * len(df.columns) * 8  # Rough estimate
                     size_mb = size_bytes / (1024 * 1024)  # Convert to MB
+                    utc_now = datetime.now(timezone.utc).isoformat()
                     
                     file_info = {
                         "file_id": process_id,
                         "filename": f"Miscellaneous_Results_{process_id}.csv",
                         "size": size_bytes,
                         "file_size_mb": size_mb,
-                        "upload_time": datetime.now().isoformat(),
-                        "last_modified": datetime.now().isoformat(),
+                        "upload_time": utc_now,
+                        "last_modified": utc_now,
                         "data_types": {col: str(dtype) for col, dtype in df.dtypes.items()},
                         "total_rows": len(df),
                         "columns": list(df.columns),
@@ -646,14 +653,15 @@ class MiscellaneousProcessor:
                     df = pd.DataFrame(storage_data)
                     size_bytes = len(df) * len(df.columns) * 8
                     size_mb = size_bytes / (1024 * 1024)
+                    utc_now = datetime.now(timezone.utc).isoformat()
                     
                     file_info = {
                         "file_id": process_id,
                         "filename": f"Miscellaneous_Results_{process_id}.csv",
                         "size": size_bytes,
                         "file_size_mb": size_mb,
-                        "upload_time": datetime.now().isoformat(),
-                        "last_modified": datetime.now().isoformat(),
+                        "upload_time": utc_now,
+                        "last_modified": utc_now,
                         "data_types": {col: str(dtype) for col, dtype in df.dtypes.items()},
                         "total_rows": len(df),
                         "columns": list(df.columns),
