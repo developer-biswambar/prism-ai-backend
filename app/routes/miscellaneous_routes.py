@@ -471,22 +471,47 @@ def execute_custom_query(request: ExecuteQueryRequest):
         conn = duckdb.connect(':memory:')
         
         try:
+            # Helper function to sanitize DataFrame before registering with DuckDB
+            def sanitize_dataframe_for_duckdb(df):
+                """Clean DataFrame to avoid DuckDB registration issues"""
+                import numpy as np
+                import pandas as pd
+                
+                # Create a copy to avoid modifying the original
+                clean_df = df.copy()
+                
+                # Handle problematic values that might cause DuckDB issues
+                # Replace inf/-inf with NaN first, then handle NaN
+                clean_df = clean_df.replace([np.inf, -np.inf], np.nan)
+                
+                # For object columns, ensure no mixed types
+                for col in clean_df.select_dtypes(include=['object']).columns:
+                    # Convert problematic object values to strings
+                    clean_df[col] = clean_df[col].astype(str).replace('nan', None)
+                
+                # Fill remaining NaN values with None (which DuckDB handles better)
+                clean_df = clean_df.where(pd.notnull(clean_df), None)
+                
+                return clean_df
+
             # Handle both dict and list formats for files_data
             if isinstance(files_data, dict):
                 # Dictionary format: {table_name: file_data}
                 for table_name, file_data in files_data.items():
                     df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
                     if df is not None:
-                        conn.register(table_name, df)
-                        logger.info(f"Registered table {table_name} with {len(df)} rows")
+                        clean_df = sanitize_dataframe_for_duckdb(df)
+                        conn.register(table_name, clean_df)
+                        logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
             elif isinstance(files_data, list):
                 # List format: [file_data1, file_data2, ...]
                 for i, file_data in enumerate(files_data):
                     table_name = f"file_{i}"
                     df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
                     if df is not None:
-                        conn.register(table_name, df)
-                        logger.info(f"Registered table {table_name} with {len(df)} rows")
+                        clean_df = sanitize_dataframe_for_duckdb(df)
+                        conn.register(table_name, clean_df)
+                        logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
             else:
                 raise HTTPException(status_code=500, detail=f"Unexpected files_data format: {type(files_data)}")
             
