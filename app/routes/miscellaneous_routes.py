@@ -14,7 +14,7 @@ from app.utils.uuid_generator import generate_uuid
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/miscellaneous", tags=["miscellaneous"])
+router = APIRouter(prefix="/api/miscellaneous", tags=["miscellaneous"])
 
 
 class FileReference(BaseModel):
@@ -381,6 +381,131 @@ Keep the explanation accessible to non-technical users.
     except Exception as e:
         logger.error(f"Error explaining SQL: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Explanation error: {str(e)}")
+
+
+class ExecuteQueryRequest(BaseModel):
+    """Request model for executing custom SQL queries"""
+    sql_query: str
+    process_id: str  # Reference to existing process data
+    limit: Optional[int] = 100  # Limit results to prevent large responses
+
+
+@router.post("/execute-query")
+def execute_custom_query(request: ExecuteQueryRequest):
+    """Execute a custom SQL query on existing processed data"""
+    
+    try:
+        from app.services.miscellaneous_service import MiscellaneousProcessor
+        
+        processor = MiscellaneousProcessor()
+        
+        # Get the stored results to access the same data and schemas
+        stored_result = processor.get_results(request.process_id)
+        if not stored_result:
+            raise HTTPException(status_code=404, detail=f"Process ID {request.process_id} not found")
+        
+        # Extract the file data and table schemas from stored results
+        files_data_raw = stored_result.get('files_data', [])
+        table_schemas = stored_result.get('table_schemas', {})
+        
+        logger.info(f"files_data_raw type: {type(files_data_raw)}")
+        logger.info(f"table_schemas type: {type(table_schemas)}, content: {list(table_schemas.keys()) if isinstance(table_schemas, dict) else 'not a dict'}")
+        
+        if not files_data_raw:
+            raise HTTPException(status_code=500, detail="No file data found for this process")
+        
+        # Convert list of files_data to dictionary mapping table names to dataframes
+        files_data = {}
+        for i, file_data in enumerate(files_data_raw):
+            table_name = f"file_{i}"
+            files_data[table_name] = file_data
+            logger.info(f"Prepared {table_name} from file: {file_data.get('filename', 'unknown')}")
+        
+        # Validate the SQL query contains only existing tables and columns
+        validation_result = processor._validate_column_references(request.sql_query, table_schemas)
+        if not validation_result['valid']:
+            return {
+                'success': False,
+                'error': validation_result['error'],
+                'suggestions': validation_result['suggestions']
+            }
+        
+        # Execute the custom SQL query
+        logger.info(f"Executing custom SQL query for process {request.process_id}")
+        logger.info(f"Query: {request.sql_query[:200]}...")
+        
+        # Create a temporary DuckDB connection and load the same data
+        import duckdb
+        conn = duckdb.connect(':memory:')
+        
+        try:
+            # Handle both dict and list formats for files_data
+            if isinstance(files_data, dict):
+                # Dictionary format: {table_name: file_data}
+                for table_name, file_data in files_data.items():
+                    df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
+                    if df is not None:
+                        conn.register(table_name, df)
+                        logger.info(f"Registered table {table_name} with {len(df)} rows")
+            elif isinstance(files_data, list):
+                # List format: [file_data1, file_data2, ...]
+                for i, file_data in enumerate(files_data):
+                    table_name = f"file_{i}"
+                    df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
+                    if df is not None:
+                        conn.register(table_name, df)
+                        logger.info(f"Registered table {table_name} with {len(df)} rows")
+            else:
+                raise HTTPException(status_code=500, detail=f"Unexpected files_data format: {type(files_data)}")
+            
+            # Apply limit to the query if specified
+            limited_query = request.sql_query.strip()
+            if request.limit and not limited_query.upper().endswith(';'):
+                # Check if query already has LIMIT
+                if 'LIMIT' not in limited_query.upper():
+                    limited_query = f"SELECT * FROM ({limited_query}) LIMIT {request.limit}"
+            
+            # Execute the query
+            result_df = conn.execute(limited_query).df()
+            
+            # Convert result to records
+            result_records = result_df.to_dict('records') if len(result_df) > 0 else []
+            
+            # Calculate basic statistics
+            row_count = len(result_records)
+            column_count = len(result_df.columns) if len(result_df) > 0 else 0
+            
+            logger.info(f"Custom query executed successfully: {row_count} rows, {column_count} columns")
+            
+            return {
+                'success': True,
+                'data': result_records,
+                'row_count': row_count,
+                'column_count': column_count,
+                'columns': list(result_df.columns) if len(result_df) > 0 else [],
+                'limited': request.limit is not None and row_count >= request.limit,
+                'query_executed': limited_query if 'limited_query' in locals() else request.sql_query,
+                'process_id': request.process_id,
+                'tables_available': list(files_data.keys())
+            }
+            
+        finally:
+            conn.close()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing custom SQL query: {str(e)}")
+        return {
+            'success': False,
+            'error': f"Query execution failed: {str(e)}",
+            'suggestions': [
+                "Check that your SQL syntax is correct",
+                "Ensure you're using the exact column names from the schema",
+                "Verify that all table references (file_0, file_1, etc.) are correct",
+                "Try a simpler query first to test the connection"
+            ]
+        }
 
 
 @router.get("/health")

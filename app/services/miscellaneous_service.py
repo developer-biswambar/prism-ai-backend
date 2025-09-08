@@ -386,7 +386,7 @@ COMPLEX TEXT PROCESSING:
         user_message = f"""
 {tables_context}
 
-🎯 USER REQUEST: {enhanced_prompt}
+🎯 USER REQUEST: {user_prompt}
 
 🚨 CRITICAL REMINDERS:
 - Use ONLY the exact column names listed above (copy them exactly with quotes)
@@ -709,7 +709,10 @@ class MiscellaneousProcessor:
                             'tables_used': list(table_schemas.keys())
                         },
                         'warnings': ['Results limited to first 100 rows for preview. Use "Open in Data Viewer" to see all results.'] if is_limited else [],
-                        'errors': []
+                        'errors': [],
+                        # Store source data and schemas for execute query functionality
+                        'files_data': files_data,  # Original dataframes and metadata
+                        'table_schemas': table_schemas  # Table schemas for validation
                     }
                     
                 except Exception as e:
