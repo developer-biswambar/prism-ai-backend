@@ -477,22 +477,60 @@ def execute_custom_query(request: ExecuteQueryRequest):
                 import numpy as np
                 import pandas as pd
                 
-                # Create a copy to avoid modifying the original
-                clean_df = df.copy()
-                
-                # Handle problematic values that might cause DuckDB issues
-                # Replace inf/-inf with NaN first, then handle NaN
-                clean_df = clean_df.replace([np.inf, -np.inf], np.nan)
-                
-                # For object columns, ensure no mixed types
-                for col in clean_df.select_dtypes(include=['object']).columns:
-                    # Convert problematic object values to strings
-                    clean_df[col] = clean_df[col].astype(str).replace('nan', None)
-                
-                # Fill remaining NaN values with None (which DuckDB handles better)
-                clean_df = clean_df.where(pd.notnull(clean_df), None)
-                
-                return clean_df
+                try:
+                    logger.info(f"Sanitizing DataFrame with shape {df.shape}, columns: {list(df.columns)}")
+                    
+                    # Create a copy to avoid modifying the original
+                    clean_df = df.copy()
+                    
+                    # Handle problematic values that might cause DuckDB issues
+                    # Replace inf/-inf with NaN first, then handle NaN
+                    clean_df = clean_df.replace([np.inf, -np.inf], np.nan)
+                    
+                    # For object columns, ensure no mixed types
+                    for col in clean_df.select_dtypes(include=['object']).columns:
+                        try:
+                            # Convert problematic object values to strings, handle None values
+                            clean_df[col] = clean_df[col].astype(str)
+                            clean_df.loc[clean_df[col] == 'nan', col] = None
+                            clean_df.loc[clean_df[col] == 'None', col] = None
+                        except Exception as e:
+                            logger.warning(f"Error processing object column {col}: {e}")
+                            # If conversion fails, fill with None
+                            clean_df[col] = None
+                    
+                    # More careful handling of NaN values
+                    # Replace NaN with None without using fillna() which might be causing the error
+                    for col in clean_df.columns:
+                        try:
+                            # Check if column has any NaN values
+                            if clean_df[col].isna().any():
+                                # Use mask-based replacement instead of fillna
+                                mask = clean_df[col].isna()
+                                clean_df.loc[mask, col] = None
+                        except Exception as e:
+                            logger.warning(f"Error handling NaN in column {col}: {e}")
+                            # If there's still an issue, set the entire column to string type
+                            clean_df[col] = clean_df[col].astype(str)
+                            clean_df.loc[clean_df[col] == 'nan', col] = None
+                    
+                    logger.info(f"Successfully sanitized DataFrame")
+                    return clean_df
+                    
+                except Exception as e:
+                    logger.error(f"Error sanitizing DataFrame: {e}")
+                    logger.error(f"DataFrame info: shape={df.shape}, dtypes={df.dtypes.to_dict()}")
+                    # Fallback: create a simple version with basic cleaning
+                    try:
+                        simple_df = df.copy()
+                        # Convert all columns to object type and replace problematic values
+                        for col in simple_df.columns:
+                            simple_df[col] = simple_df[col].astype(object)
+                            simple_df.loc[simple_df[col].isna(), col] = None
+                        return simple_df
+                    except Exception as fallback_error:
+                        logger.error(f"Even fallback sanitization failed: {fallback_error}")
+                        raise Exception(f"DataFrame sanitization failed: {e}"))
 
             # Handle both dict and list formats for files_data
             if isinstance(files_data, dict):
@@ -500,18 +538,40 @@ def execute_custom_query(request: ExecuteQueryRequest):
                 for table_name, file_data in files_data.items():
                     df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
                     if df is not None:
-                        clean_df = sanitize_dataframe_for_duckdb(df)
-                        conn.register(table_name, clean_df)
-                        logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
+                        try:
+                            clean_df = sanitize_dataframe_for_duckdb(df)
+                            conn.register(table_name, clean_df)
+                            logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
+                        except Exception as e:
+                            logger.error(f"Failed to register table {table_name}: {e}")
+                            # Try registering without sanitization as last resort
+                            try:
+                                conn.register(table_name, df)
+                                logger.warning(f"Registered table {table_name} without sanitization")
+                            except Exception as e2:
+                                logger.error(f"Failed to register {table_name} even without sanitization: {e2}")
+                                raise HTTPException(status_code=500, 
+                                                  detail=f"Could not register table {table_name}: {e2}")
             elif isinstance(files_data, list):
                 # List format: [file_data1, file_data2, ...]
                 for i, file_data in enumerate(files_data):
                     table_name = f"file_{i}"
                     df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
                     if df is not None:
-                        clean_df = sanitize_dataframe_for_duckdb(df)
-                        conn.register(table_name, clean_df)
-                        logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
+                        try:
+                            clean_df = sanitize_dataframe_for_duckdb(df)
+                            conn.register(table_name, clean_df)
+                            logger.info(f"Registered table {table_name} with {len(clean_df)} rows")
+                        except Exception as e:
+                            logger.error(f"Failed to register table {table_name}: {e}")
+                            # Try registering without sanitization as last resort
+                            try:
+                                conn.register(table_name, df)
+                                logger.warning(f"Registered table {table_name} without sanitization")
+                            except Exception as e2:
+                                logger.error(f"Failed to register {table_name} even without sanitization: {e2}")
+                                raise HTTPException(status_code=500, 
+                                                  detail=f"Could not register table {table_name}: {e2}")
             else:
                 raise HTTPException(status_code=500, detail=f"Unexpected files_data format: {type(files_data)}")
             
