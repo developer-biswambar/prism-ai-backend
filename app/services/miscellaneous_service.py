@@ -466,83 +466,6 @@ IMPORTANT: Return your response in the exact JSON format specified in the system
         context_parts.append("⚠️  WARNING: Use ONLY the exact column names listed above. Do NOT guess or assume column names!")
         
         return "\n".join(context_parts)
-    
-    def _validate_column_references(self, sql_query: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """
-        Validate that all column references in the SQL query exist in the table schemas
-        Returns dict with 'valid', 'error', and 'suggestions' keys
-        """
-        import re
-        
-        # Extract all column references from SQL (quoted and unquoted)
-        # This is a basic validation - could be enhanced with proper SQL parsing
-        
-        # Collect all valid column names from all tables
-        valid_columns = set()
-        table_columns = {}
-        
-        for table_name, schema in table_schemas.items():
-            table_columns[table_name] = []
-            for col_info in schema:
-                col_name = col_info['column_name']
-                valid_columns.add(col_name.lower())
-                table_columns[table_name].append(col_name)
-        
-        # Find potential column references in the SQL
-        # Look for quoted column names and common SQL patterns
-        quoted_columns = re.findall(r'"([^"]+)"', sql_query)
-        word_patterns = re.findall(r'\b(\w+(?:\s+\w+)*)\b', sql_query)
-        
-        issues = []
-        suggestions = []
-        
-        # Check quoted column references
-        for col in quoted_columns:
-            if col.lower() not in valid_columns and col.lower() not in ['file_0', 'file_1', 'select', 'from', 'where', 'and', 'or']:
-                # Look for similar column names
-                similar_cols = [
-                    valid_col for valid_col in valid_columns 
-                    if col.lower() in valid_col.lower() or valid_col.lower() in col.lower()
-                ]
-                
-                if similar_cols:
-                    quoted_similar = [f'"{c}"' for c in similar_cols]
-                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(quoted_similar)}?')
-                    suggestions.append(f'Replace "{col}" with one of: {", ".join(quoted_similar)}')
-                else:
-                    issues.append(f'Column "{col}" does not exist in any table.')
-                    quoted_available = [f'"{c}"' for c in sorted(valid_columns)]
-                    suggestions.append(f'Available columns: {", ".join(quoted_available)}')
-        
-        # Check for common problematic patterns (only as standalone quoted strings)
-        problematic_patterns = [
-            ('"Account Name"', ['Sub Account Number', 'Security Account Number']),
-            ('"account name"', ['Sub Account Number', 'Security Account Number']),
-            ('"Name"', ['Sub Account Number', 'Security Account Number'])
-        ]
-        
-        for pattern, alternatives in problematic_patterns:
-            if pattern.lower() in sql_query.lower():
-                # Check if any of the alternatives exist in our schema
-                existing_alternatives = [alt for alt in alternatives if alt.lower() in valid_columns]
-                if existing_alternatives:
-                    clean_pattern = pattern.strip('"')
-                    issues.append(f'"{clean_pattern}" not found in schema.')
-                    quoted_alternatives = [f'"{alt}"' for alt in existing_alternatives]
-                    suggestions.append(f'Try using: {", ".join(quoted_alternatives)}')
-        
-        if issues:
-            return {
-                'valid': False,
-                'error': '; '.join(issues),
-                'suggestions': suggestions
-            }
-        
-        return {
-            'valid': True,
-            'error': None,
-            'suggestions': []
-        }
 
 
 # Shared storage for results (class-level storage)
@@ -735,6 +658,83 @@ class MiscellaneousProcessor:
             return "complex_query"
         else:
             return "simple_select"
+    
+    def _validate_column_references(self, sql_query: str, table_schemas: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Validate that all column references in the SQL query exist in the table schemas
+        Returns dict with 'valid', 'error', and 'suggestions' keys
+        """
+        import re
+        
+        # Extract all column references from SQL (quoted and unquoted)
+        # This is a basic validation - could be enhanced with proper SQL parsing
+        
+        # Collect all valid column names from all tables
+        valid_columns = set()
+        table_columns = {}
+        
+        for table_name, schema in table_schemas.items():
+            table_columns[table_name] = []
+            for col_info in schema:
+                col_name = col_info['column_name']
+                valid_columns.add(col_name.lower())
+                table_columns[table_name].append(col_name)
+        
+        # Find potential column references in the SQL
+        # Look for quoted column names and common SQL patterns
+        quoted_columns = re.findall(r'"([^"]+)"', sql_query)
+        word_patterns = re.findall(r'\b(\w+(?:\s+\w+)*)\b', sql_query)
+        
+        issues = []
+        suggestions = []
+        
+        # Check quoted column references
+        for col in quoted_columns:
+            if col.lower() not in valid_columns and col.lower() not in ['file_0', 'file_1', 'select', 'from', 'where', 'and', 'or']:
+                # Look for similar column names
+                similar_cols = [
+                    valid_col for valid_col in valid_columns 
+                    if col.lower() in valid_col.lower() or valid_col.lower() in col.lower()
+                ]
+                
+                if similar_cols:
+                    quoted_similar = [f'"{c}"' for c in similar_cols]
+                    issues.append(f'Column "{col}" not found. Did you mean: {", ".join(quoted_similar)}?')
+                    suggestions.append(f'Replace "{col}" with one of: {", ".join(quoted_similar)}')
+                else:
+                    issues.append(f'Column "{col}" does not exist in any table.')
+                    quoted_available = [f'"{c}"' for c in sorted(valid_columns)]
+                    suggestions.append(f'Available columns: {", ".join(quoted_available)}')
+        
+        # Check for common problematic patterns (only as standalone quoted strings)
+        problematic_patterns = [
+            ('"Account Name"', ['Sub Account Number', 'Security Account Number']),
+            ('"account name"', ['Sub Account Number', 'Security Account Number']),
+            ('"Name"', ['Sub Account Number', 'Security Account Number'])
+        ]
+        
+        for pattern, alternatives in problematic_patterns:
+            if pattern.lower() in sql_query.lower():
+                # Check if any of the alternatives exist in our schema
+                existing_alternatives = [alt for alt in alternatives if alt.lower() in valid_columns]
+                if existing_alternatives:
+                    clean_pattern = pattern.strip('"')
+                    issues.append(f'"{clean_pattern}" not found in schema.')
+                    quoted_alternatives = [f'"{alt}"' for alt in existing_alternatives]
+                    suggestions.append(f'Try using: {", ".join(quoted_alternatives)}')
+        
+        if issues:
+            return {
+                'valid': False,
+                'error': '; '.join(issues),
+                'suggestions': suggestions
+            }
+        
+        return {
+            'valid': True,
+            'error': None,
+            'suggestions': []
+        }
     
     def store_results(self, process_id: str, result_data: Dict[str, Any]):
         """Store processing results"""
