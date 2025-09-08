@@ -289,13 +289,15 @@ ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no securi
 
 IMPORTANT RULES:
 1. Use any SQL operations needed: SELECT, WITH, CREATE TEMP TABLE, etc.
-2. Only reference tables and columns that exist in the provided schema
+2. ONLY reference tables and columns that EXACTLY match the provided schema - NO guessing or assumptions
 3. Use proper SQL syntax compatible with DuckDB
 4. For joins, use explicit JOIN syntax with clear conditions
 5. Use appropriate aggregate functions for summaries
 6. Include column aliases for clarity
 7. ALWAYS return response in JSON format with "sql_query" field - no explanations or markdown formatting
 8. Handle complex data extraction, transformation, and analysis tasks
+
+CRITICAL: If a column name is mentioned in the user request but doesn't exist in the schema, use the closest matching column name from the actual schema or ask for clarification in the description field.
 
 RESPONSE FORMAT (CRITICAL):
 {
