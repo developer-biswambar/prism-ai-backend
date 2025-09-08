@@ -486,7 +486,7 @@ def execute_custom_query(request: ExecuteQueryRequest):
                     
                 except Exception as e:
                     logger.error(f"Error in sanitization function: {e}")
-                    return df)
+                    return df
 
             # Handle both dict and list formats for files_data
             if isinstance(files_data, dict):
