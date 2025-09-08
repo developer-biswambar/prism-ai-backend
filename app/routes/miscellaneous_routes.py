@@ -404,15 +404,47 @@ def execute_custom_query(request: ExecuteQueryRequest):
         if not stored_result:
             raise HTTPException(status_code=404, detail=f"Process ID {request.process_id} not found")
         
+        # Debug: Log what we got from storage
+        logger.info(f"DEBUG: stored_result keys: {list(stored_result.keys())}")
+        logger.info(f"DEBUG: stored_result structure: {type(stored_result)}")
+        
         # Extract the file data and table schemas from stored results
         files_data_raw = stored_result.get('files_data', [])
         table_schemas = stored_result.get('table_schemas', {})
+        processing_info = stored_result.get('processing_info', {})
         
         logger.info(f"files_data_raw type: {type(files_data_raw)}")
         logger.info(f"table_schemas type: {type(table_schemas)}, content: {list(table_schemas.keys()) if isinstance(table_schemas, dict) else 'not a dict'}")
         
+        # If files_data is missing or empty, try to reconstruct from processing info
+        if not files_data_raw and processing_info.get('input_files'):
+            logger.warning("files_data missing from stored results, attempting to reconstruct from original files")
+            
+            # Get the original request data that was used for processing 
+            # This is a fallback approach - we'll retrieve the original files
+            input_files_count = processing_info.get('input_files', 0)
+            
+            # For now, return an error asking user to re-process
+            # In future, we could store file IDs and reconstruct the data
+            return {
+                'success': False,
+                'error': 'File data no longer available for this process. Please re-run the original query to enable execute functionality.',
+                'suggestions': [
+                    'Click "Process Data with AI" again to regenerate the query',
+                    'The execute feature works on freshly processed data',
+                    'File data is not persisted long-term for execute queries'
+                ]
+            }
+        
         if not files_data_raw:
-            raise HTTPException(status_code=500, detail="No file data found for this process")
+            return {
+                'success': False,
+                'error': 'No file data found for this process',
+                'suggestions': [
+                    'Please re-run the original data processing',
+                    'Execute query only works on recently processed data'
+                ]
+            }
         
         # Convert list of files_data to dictionary mapping table names to dataframes
         files_data = {}
