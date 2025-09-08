@@ -664,20 +664,9 @@ class MiscellaneousProcessor:
                 # All tables are user-uploaded files, no security risk
                 logger.info("Skipping SQL safety validation for in-memory database")
                 
-                # Validate column references in the generated SQL
-                column_validation = self._validate_column_references(generated_sql, table_schemas)
-                if not column_validation['valid']:
-                    return {
-                        'success': False,
-                        'error': f"Column reference error: {column_validation['error']}",
-                        'generated_sql': generated_sql,
-                        'data': [],
-                        'warnings': column_validation['suggestions'],
-                        'errors': [column_validation['error']],
-                        # Store source data and schemas even on failure for execute query functionality
-                        'files_data': files_data,  # Original dataframes and metadata
-                        'table_schemas': table_schemas  # Table schemas for validation
-                    }
+                # Skip column validation - let DuckDB handle SQL validation
+                # The validation logic is too strict and prevents valid queries with aliases/static values
+                logger.info("Skipping column validation for AI-generated SQL - letting DuckDB handle validation")
                 
                 # Execute the query
                 try:

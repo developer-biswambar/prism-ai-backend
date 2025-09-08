@@ -453,14 +453,9 @@ def execute_custom_query(request: ExecuteQueryRequest):
             files_data[table_name] = file_data
             logger.info(f"Prepared {table_name} from file: {file_data.get('filename', 'unknown')}")
         
-        # Validate the SQL query contains only existing tables and columns
-        validation_result = processor._validate_column_references(request.sql_query, table_schemas)
-        if not validation_result['valid']:
-            return {
-                'success': False,
-                'error': validation_result['error'],
-                'suggestions': validation_result['suggestions']
-            }
+        # Skip column validation for execute queries - let DuckDB handle SQL validation
+        # The validation logic is too strict and prevents valid queries with aliases/static values
+        logger.info("Skipping column validation for execute query - letting DuckDB handle SQL validation")
         
         # Execute the custom SQL query
         logger.info(f"Executing custom SQL query for process {request.process_id}")
@@ -619,15 +614,32 @@ def execute_custom_query(request: ExecuteQueryRequest):
         raise
     except Exception as e:
         logger.error(f"Error executing custom SQL query: {str(e)}")
+        
+        # Provide more specific error messages based on common issues
+        error_message = str(e)
+        suggestions = []
+        
+        if "file 0" in error_message.lower():
+            suggestions.append("Table name should be 'file_0' (with underscore), not 'file 0' (with space)")
+        if "does not exist" in error_message.lower() and "table" in error_message.lower():
+            suggestions.append("Use table names: file_0, file_1, file_2, etc. (with underscores)")
+        if "column" in error_message.lower() and "does not exist" in error_message.lower():
+            suggestions.append("Check actual column names - remember column names are case-sensitive")
+            suggestions.append("Use double quotes around column names if they contain spaces: \"Column Name\"")
+        
+        # Default suggestions
+        if not suggestions:
+            suggestions = [
+                "Check that your SQL syntax is correct",
+                "Verify that all table references use underscores (file_0, file_1, etc.)",
+                "Column names with spaces need double quotes: \"Column Name\"",
+                "Try a simpler query first like: SELECT * FROM file_0 LIMIT 5"
+            ]
+        
         return {
             'success': False,
-            'error': f"Query execution failed: {str(e)}",
-            'suggestions': [
-                "Check that your SQL syntax is correct",
-                "Ensure you're using the exact column names from the schema",
-                "Verify that all table references (file_0, file_1, etc.) are correct",
-                "Try a simpler query first to test the connection"
-            ]
+            'error': f"Query execution failed: {error_message}",
+            'suggestions': suggestions
         }
 
 
