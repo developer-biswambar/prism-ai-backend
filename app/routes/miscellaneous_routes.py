@@ -162,10 +162,22 @@ def get_miscellaneous_results(
         
         result_data = results.get('data', [])
         paginated_data = result_data[start_idx:end_idx]
-        
+        import math
+
+        def sanitize_data(data):
+            if isinstance(data, dict):
+                return {k: sanitize_data(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [sanitize_data(v) for v in data]
+            elif isinstance(data, float):
+                if math.isnan(data) or math.isinf(data):
+                    return None  # or str(data) if you want "NaN"/"Infinity"
+                return data
+            return data
+
         response = {
             'process_id': process_id,
-            'data': paginated_data,
+            'data': sanitize_data(paginated_data),
             'pagination': {
                 'page': page,
                 'page_size': page_size,
