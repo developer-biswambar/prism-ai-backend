@@ -468,6 +468,22 @@ def execute_custom_query(request: ExecuteQueryRequest):
             # Execute the query
             result_df = conn.execute(limited_query).df()
             
+            # Sanitize the DataFrame to handle JSON non-compliant values
+            if len(result_df) > 0:
+                import numpy as np
+                
+                # Replace problematic float values
+                result_df = result_df.replace([np.inf, -np.inf], None)  # Replace infinity with None
+                result_df = result_df.fillna(value=None)  # Replace NaN with None
+                
+                # Handle very large numbers that might cause JSON issues
+                for col in result_df.select_dtypes(include=[np.number]).columns:
+                    # Check for very large numbers that might cause JSON serialization issues
+                    mask = np.abs(result_df[col]) > 1e15
+                    if mask.any():
+                        result_df.loc[mask, col] = None
+                        logger.warning(f"Replaced {mask.sum()} very large numbers in column '{col}' with None")
+            
             # Convert result to records
             result_records = result_df.to_dict('records') if len(result_df) > 0 else []
             
