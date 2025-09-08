@@ -281,6 +281,17 @@ async def get_templates():
             "user_requirements": "Delta Generation Process Requirements:Compare yesterday's trade file with today's trade file using TradeID + Account as composite key, and monitor changes in Status, Amount, and Settlement fields.",
             "icon": "📊",
             "color": "orange"
+        },
+        {
+            "name": "Data Analysis",
+            "description": "Process multiple files using natural language queries. Merge, reconcile, filter, calculate, or analyze data across up to 5 files with AI-powered SQL generation.",
+            "category": "miscellaneous",
+            "filesRequired": 1,
+            "maxFiles": 5,
+            "fileLabels": ["Data File"],
+            "user_requirements": "Describe what you want to do with your data in plain English. Examples: 'Merge files and remove duplicates', 'Find missing records between files', 'Calculate running totals by customer'",
+            "icon": "🧠",
+            "color": "purple"
         }
     ]
 
@@ -366,6 +377,7 @@ from app.routes.save_results_routes import router as save_results_router
 from app.routes.recent_results_routes import router as recent_results_router
 from app.routes.unified_rules_router import unified_rules_router
 from app.routes.transformation_routes import router as transformation_router
+from app.routes.miscellaneous_routes import router as miscellaneous_router
 
 app.include_router(health_routes)
 app.include_router(reconciliation_router)
@@ -383,7 +395,9 @@ app.include_router(recent_results_router)
 app.include_router(unified_rules_router)
 
 app.include_router(transformation_router)
-print("✅ All routes loaded successfully (optimized reconciliation + AI regex generation enabled)")
+app.include_router(miscellaneous_router)
+
+print("✅ All routes loaded successfully (optimized reconciliation + AI regex generation + miscellaneous data processing enabled)")
 
 
 @app.get("/performance/metrics")
