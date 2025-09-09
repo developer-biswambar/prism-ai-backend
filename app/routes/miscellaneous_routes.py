@@ -400,6 +400,7 @@ class SavePromptRequest(BaseModel):
     files_info: List[Dict[str, Any]]
     results_summary: Dict[str, Any]
     process_id: str
+    ai_description: Optional[str] = None  # AI-generated description of what the query does
 
 
 class SavedPrompt(BaseModel):
@@ -686,11 +687,21 @@ def generate_ideal_prompt(request: SavePromptRequest):
         
         files_description = "\n".join(files_context)
         
+        # Build enhanced context with AI description
+        ai_description_context = ""
+        if request.ai_description:
+            ai_description_context = f"""
+AI'S UNDERSTANDING: "{request.ai_description}"
+"""
+
         prompt = f"""
-Analyze this successful data processing scenario and generate an ideal prompt that would consistently produce similar results.
+You are an expert at reverse-engineering successful data operations to create optimal, reusable prompts.
+
+REVERSE ENGINEERING TASK:
+Analyze this successful data processing scenario and create an IDEAL PROMPT that would consistently generate the same SQL query and achieve identical results.
 
 ORIGINAL USER PROMPT: "{request.original_prompt}"
-
+{ai_description_context}
 GENERATED SQL QUERY:
 {request.generated_sql}
 
@@ -702,26 +713,32 @@ RESULTS ACHIEVED:
 - Columns: {request.results_summary.get('column_count', 'N/A')}
 - Processing type: {request.results_summary.get('query_type', 'analysis')}
 
-Based on this successful execution, create an IDEAL PROMPT that:
-1. Is specific and detailed
-2. Clearly states the objective
-3. Mentions key columns or criteria used
-4. Would reliably produce similar results
-5. Is reusable for similar file structures
+REVERSE ENGINEERING GUIDELINES:
+1. **Analyze the SQL** to understand exactly what operations were performed
+2. **Extract key patterns** from the generated query (JOINs, WHERE clauses, aggregations, etc.)
+3. **Identify column references** and data relationships used
+4. **Understand the business logic** from both the original prompt and AI description
+5. **Create a more precise prompt** that would generate similar SQL reliably
 
-Also provide:
-1. A concise name for this prompt (max 50 chars)
-2. A brief description of what it does
-3. The category (reconciliation, transformation, analysis, etc.)
-4. File pattern description (what types of files this works with)
+The IDEAL PROMPT should:
+✓ Be more specific than the original user prompt
+✓ Explicitly mention key columns, conditions, and operations from the SQL
+✓ Include precise business requirements that led to the SQL structure
+✓ Be detailed enough to generate consistent results on similar data
+✓ Use clear, unambiguous language about the desired outcome
+
+EXAMPLE IMPROVEMENT:
+- Original: "Compare file_1 and file_2"
+- Ideal: "Compare file_1 and file_2 by matching on customer_id column, show records from file_1 that don't exist in file_2, and include the customer_name, transaction_amount, and transaction_date columns in the results"
 
 Respond in JSON format:
 {{
-    "ideal_prompt": "the optimized prompt text",
-    "name": "Short descriptive name",
-    "description": "Brief description of what this prompt does",
-    "category": "reconciliation|transformation|analysis|delta|reporting",
-    "file_pattern": "Description of file types/structure this works with"
+    "ideal_prompt": "the optimized, specific prompt that would generate similar SQL",
+    "name": "Short descriptive name (max 50 chars)",
+    "description": "Brief description of what this prompt accomplishes",
+    "category": "reconciliation|transformation|analysis|delta|reporting|aggregation|filtering",
+    "file_pattern": "Description of required file types and structure",
+    "improvements_made": "Brief explanation of how this prompt improves on the original"
 }}
 """
         
@@ -750,6 +767,7 @@ Respond in JSON format:
                 "description": ideal_prompt_data.get("description", ""),
                 "category": ideal_prompt_data.get("category", "analysis"),
                 "file_pattern": ideal_prompt_data.get("file_pattern", "General data files"),
+                "improvements_made": ideal_prompt_data.get("improvements_made", ""),
                 "original_prompt": request.original_prompt
             }
             
