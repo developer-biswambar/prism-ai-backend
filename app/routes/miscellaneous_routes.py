@@ -787,7 +787,33 @@ Respond in JSON format:
         raise
     except Exception as e:
         logger.error(f"Error generating ideal prompt: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate ideal prompt: {str(e)}")
+        
+        # Check for specific OpenAI errors
+        error_message = str(e).lower()
+        if "insufficient_quota" in error_message or "quota" in error_message:
+            return {
+                "success": False,
+                "error": "AI service quota exceeded. You can still save your original prompt manually.",
+                "error_type": "quota_exceeded",
+                "fallback_available": True,
+                "suggestion": "Consider upgrading your OpenAI plan or use manual prompt saving."
+            }
+        elif "429" in error_message or "too many requests" in error_message or "rate" in error_message:
+            return {
+                "success": False, 
+                "error": "AI service is currently busy. Please try again in a moment or save your prompt manually.",
+                "error_type": "rate_limited",
+                "fallback_available": True,
+                "suggestion": "Wait a few minutes before trying AI optimization again."
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"AI optimization temporarily unavailable. You can still save your original prompt.",
+                "error_type": "general_error",
+                "fallback_available": True,
+                "suggestion": "Use manual prompt saving or try AI optimization later."
+            }
 
 
 @router.post("/save-prompt")
@@ -860,6 +886,46 @@ def delete_saved_prompt(prompt_id: str):
     except Exception as e:
         logger.error(f"Error deleting prompt {prompt_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to delete prompt: {str(e)}")
+
+
+@router.put("/saved-prompts/{prompt_id}")
+def update_saved_prompt(prompt_id: str, prompt_data: dict):
+    """Update an existing saved prompt"""
+    try:
+        if prompt_id not in saved_prompts_storage:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        
+        # Get existing prompt
+        existing_prompt = saved_prompts_storage[prompt_id]
+        
+        # Update the prompt with new data
+        updated_prompt = {
+            "id": prompt_id,
+            "name": prompt_data.get("name", existing_prompt["name"]),
+            "ideal_prompt": prompt_data.get("ideal_prompt", existing_prompt["ideal_prompt"]),
+            "original_prompt": prompt_data.get("original_prompt", existing_prompt["original_prompt"]),
+            "description": prompt_data.get("description", existing_prompt["description"]),
+            "category": prompt_data.get("category", existing_prompt["category"]),
+            "file_pattern": prompt_data.get("file_pattern", existing_prompt["file_pattern"]),
+            "created_at": existing_prompt["created_at"],  # Keep original creation date
+            "updated_at": datetime.now().isoformat(),  # Add update timestamp
+        }
+        
+        # Save updated prompt
+        saved_prompts_storage[prompt_id] = updated_prompt
+        
+        logger.info(f"Updated prompt {prompt_id}: {updated_prompt['name']}")
+        return {
+            "success": True,
+            "message": "Prompt updated successfully",
+            "prompt": updated_prompt
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating prompt {prompt_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update prompt: {str(e)}")
 
 
 class PromptSuggestionsRequest(BaseModel):

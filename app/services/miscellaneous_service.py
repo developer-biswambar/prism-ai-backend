@@ -313,7 +313,8 @@ ADVANCED ANALYSIS CAPABILITIES:
 
 🔧 TRANSFORMATION OPERATIONS:  
 - Data cleaning: Use TRIM(), UPPER(), LOWER(), REPLACE(), REGEXP_REPLACE()
-- Type conversion: Use CAST(), TRY_CAST(), STRPTIME() for date parsing
+- Type conversion: Use CAST(), TRY_CAST() for safe conversions
+- Date parsing: Use CASE WHEN column IS NOT NULL AND column != '' THEN STRPTIME(column, 'format') ELSE NULL END
 - Derivation: Create calculated columns with CASE WHEN, mathematical operations
 - Aggregation: Use GROUP BY with SUM(), COUNT(), AVG(), MIN(), MAX()
 - Pivoting: Use PIVOT/UNPIVOT or conditional aggregation
@@ -407,10 +408,12 @@ WITH matched AS (
 SELECT * FROM matched WHERE match_status = 'MATCHED';
 
 🔧 TRANSFORMATION EXAMPLE:
--- Clean and derive new fields
+-- Clean and derive new fields with safe date parsing
 SELECT 
     TRIM(UPPER("Customer_Name")) as clean_name,
-    CAST("Date_String" AS DATE) as parsed_date,
+    CASE WHEN "Date_String" IS NOT NULL AND "Date_String" != '' 
+         THEN STRPTIME("Date_String", '%Y%m%d') 
+         ELSE NULL END as parsed_date,
     "Revenue" - "Cost" as profit_margin,
     CASE WHEN "Amount" > 1000 THEN 'HIGH' ELSE 'LOW' END as category,
     REGEXP_EXTRACT("Account", '[0-9]+') as account_number
