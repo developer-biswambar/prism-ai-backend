@@ -401,8 +401,8 @@ COMPLEX TEXT PROCESSING:
 WITH matched AS (
   SELECT f1.*, f2.*, 
          CASE WHEN ABS(f1."Amount" - f2."Value") <= 0.01 THEN 'MATCHED' ELSE 'TOLERANCE_MISMATCH' END as match_status
-  FROM file_0 f1 
-  FULL OUTER JOIN file_1 f2 ON f1."ID" = f2."Reference_ID"
+  FROM file_1 f1 
+  FULL OUTER JOIN file_2 f2 ON f1."ID" = f2."Reference_ID"
 )
 SELECT * FROM matched WHERE match_status = 'MATCHED';
 
@@ -414,7 +414,7 @@ SELECT
     "Revenue" - "Cost" as profit_margin,
     CASE WHEN "Amount" > 1000 THEN 'HIGH' ELSE 'LOW' END as category,
     REGEXP_EXTRACT("Account", '[0-9]+') as account_number
-FROM file_0;
+FROM file_1;
 
 📊 DELTA ANALYSIS EXAMPLE:
 -- Compare two datasets for changes
@@ -430,7 +430,7 @@ WITH comparison AS (
       WHEN f1."Amount" != f2."Amount" THEN 'AMENDED'
       ELSE 'UNCHANGED'
     END as change_type
-  FROM file_0 f1 FULL OUTER JOIN file_1 f2 ON f1."ID" = f2."ID"
+  FROM file_1 f1 FULL OUTER JOIN file_2 f2 ON f1."ID" = f2."ID"
 )
 SELECT * FROM comparison WHERE change_type != 'UNCHANGED';
 
@@ -589,7 +589,7 @@ class MiscellaneousProcessor:
                 def process_single_file(i: int, file_data: Dict[str, Any]) -> Dict[str, Any]:
                     """Process a single file for registration and schema analysis"""
                     df = file_data['dataframe']
-                    table_name = f"file_{i}"
+                    table_name = f"file_{i + 1}"  # Changed to start from file_1
                     filename = file_data['filename']
                     
                     logger.info(f"Processing file {filename} as {table_name} (parallel)")
@@ -795,7 +795,7 @@ class MiscellaneousProcessor:
         
         # Check quoted column references
         for col in quoted_columns:
-            if col.lower() not in valid_columns and col.lower() not in ['file_0', 'file_1', 'select', 'from', 'where', 'and', 'or']:
+            if col.lower() not in valid_columns and col.lower() not in ['file_1', 'file_2', 'select', 'from', 'where', 'and', 'or']:
                 # Look for similar column names using multiple matching strategies
                 exact_matches = [c for c in valid_columns if col.lower() == c.lower()]
                 partial_matches = [c for c in valid_columns if col.lower() in c.lower() or c.lower() in col.lower()]

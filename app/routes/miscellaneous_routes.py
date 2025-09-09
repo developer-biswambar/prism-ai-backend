@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api/miscellaneous", tags=["miscellaneous"])
 
+# In-memory storage for saved prompts (in production, use database)
+saved_prompts_storage = {}
+
 
 class FileReference(BaseModel):
     """File reference for miscellaneous data processing"""
@@ -390,6 +393,27 @@ class ExecuteQueryRequest(BaseModel):
     limit: Optional[int] = 100  # Limit results to prevent large responses
 
 
+class SavePromptRequest(BaseModel):
+    """Request model for saving an ideal prompt"""
+    original_prompt: str
+    generated_sql: str
+    files_info: List[Dict[str, Any]]
+    results_summary: Dict[str, Any]
+    process_id: str
+
+
+class SavedPrompt(BaseModel):
+    """Model for saved prompt"""
+    id: str
+    name: str
+    ideal_prompt: str
+    original_prompt: str
+    file_pattern: str  # Description of file types/structure this works with
+    created_at: str
+    category: str
+    description: str
+
+
 @router.post("/execute-query")
 def execute_custom_query(request: ExecuteQueryRequest):
     """Execute a custom SQL query on existing processed data"""
@@ -449,7 +473,7 @@ def execute_custom_query(request: ExecuteQueryRequest):
         # Convert list of files_data to dictionary mapping table names to dataframes
         files_data = {}
         for i, file_data in enumerate(files_data_raw):
-            table_name = f"file_{i}"
+            table_name = f"file_{i + 1}"  # Changed to start from file_1
             files_data[table_name] = file_data
             logger.info(f"Prepared {table_name} from file: {file_data.get('filename', 'unknown')}")
         
@@ -506,7 +530,7 @@ def execute_custom_query(request: ExecuteQueryRequest):
             elif isinstance(files_data, list):
                 # List format: [file_data1, file_data2, ...]
                 for i, file_data in enumerate(files_data):
-                    table_name = f"file_{i}"
+                    table_name = f"file_{i + 1}"  # Changed to start from file_1  
                     df = file_data.get('dataframe') if isinstance(file_data, dict) else file_data
                     if df is not None:
                         try:
@@ -622,7 +646,7 @@ def execute_custom_query(request: ExecuteQueryRequest):
         if "file 0" in error_message.lower():
             suggestions.append("Table name should be 'file_0' (with underscore), not 'file 0' (with space)")
         if "does not exist" in error_message.lower() and "table" in error_message.lower():
-            suggestions.append("Use table names: file_0, file_1, file_2, etc. (with underscores)")
+            suggestions.append("Use table names: file_1, file_2, file_3, etc. (with underscores)")
         if "column" in error_message.lower() and "does not exist" in error_message.lower():
             suggestions.append("Check actual column names - remember column names are case-sensitive")
             suggestions.append("Use double quotes around column names if they contain spaces: \"Column Name\"")
@@ -631,15 +655,357 @@ def execute_custom_query(request: ExecuteQueryRequest):
         if not suggestions:
             suggestions = [
                 "Check that your SQL syntax is correct",
-                "Verify that all table references use underscores (file_0, file_1, etc.)",
+                "Verify that all table references use underscores (file_1, file_2, etc.)",
                 "Column names with spaces need double quotes: \"Column Name\"",
-                "Try a simpler query first like: SELECT * FROM file_0 LIMIT 5"
+                "Try a simpler query first like: SELECT * FROM file_1 LIMIT 5"
             ]
         
         return {
             'success': False,
             'error': f"Query execution failed: {error_message}",
             'suggestions': suggestions
+        }
+
+
+@router.post("/generate-ideal-prompt")
+def generate_ideal_prompt(request: SavePromptRequest):
+    """Generate an ideal prompt based on successful query results"""
+    try:
+        from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
+        
+        llm_service = get_llm_service()
+        if not llm_service.is_available():
+            raise HTTPException(status_code=500, detail="LLM service not available")
+        
+        generation_params = get_llm_generation_params()
+        
+        # Build context about the files
+        files_context = []
+        for i, file_info in enumerate(request.files_info, 1):
+            files_context.append(f"file_{i}: {file_info.get('filename', 'unknown')} ({file_info.get('rows', 0)} rows)")
+        
+        files_description = "\n".join(files_context)
+        
+        prompt = f"""
+Analyze this successful data processing scenario and generate an ideal prompt that would consistently produce similar results.
+
+ORIGINAL USER PROMPT: "{request.original_prompt}"
+
+GENERATED SQL QUERY:
+{request.generated_sql}
+
+FILES USED:
+{files_description}
+
+RESULTS ACHIEVED:
+- Row count: {request.results_summary.get('row_count', 'N/A')}
+- Columns: {request.results_summary.get('column_count', 'N/A')}
+- Processing type: {request.results_summary.get('query_type', 'analysis')}
+
+Based on this successful execution, create an IDEAL PROMPT that:
+1. Is specific and detailed
+2. Clearly states the objective
+3. Mentions key columns or criteria used
+4. Would reliably produce similar results
+5. Is reusable for similar file structures
+
+Also provide:
+1. A concise name for this prompt (max 50 chars)
+2. A brief description of what it does
+3. The category (reconciliation, transformation, analysis, etc.)
+4. File pattern description (what types of files this works with)
+
+Respond in JSON format:
+{{
+    "ideal_prompt": "the optimized prompt text",
+    "name": "Short descriptive name",
+    "description": "Brief description of what this prompt does",
+    "category": "reconciliation|transformation|analysis|delta|reporting",
+    "file_pattern": "Description of file types/structure this works with"
+}}
+"""
+        
+        messages = [
+            LLMMessage(role="system", content="You are an expert at analyzing data processing patterns and creating optimized, reusable prompts."),
+            LLMMessage(role="user", content=prompt)
+        ]
+        
+        response = llm_service.generate_text(
+            messages=messages,
+            **generation_params
+        )
+        
+        if not response.success:
+            raise HTTPException(status_code=500, detail=f"Failed to generate ideal prompt: {response.error}")
+        
+        # Parse the JSON response
+        try:
+            import json
+            ideal_prompt_data = json.loads(response.content)
+            
+            return {
+                "success": True,
+                "ideal_prompt": ideal_prompt_data.get("ideal_prompt", ""),
+                "name": ideal_prompt_data.get("name", "Generated Prompt"),
+                "description": ideal_prompt_data.get("description", ""),
+                "category": ideal_prompt_data.get("category", "analysis"),
+                "file_pattern": ideal_prompt_data.get("file_pattern", "General data files"),
+                "original_prompt": request.original_prompt
+            }
+            
+        except json.JSONDecodeError:
+            # Fallback if JSON parsing fails
+            return {
+                "success": True,
+                "ideal_prompt": response.content.strip(),
+                "name": "Generated Prompt",
+                "description": "AI-generated optimized prompt",
+                "category": "analysis",
+                "file_pattern": "General data files",
+                "original_prompt": request.original_prompt
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating ideal prompt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate ideal prompt: {str(e)}")
+
+
+@router.post("/save-prompt")
+def save_prompt(prompt_data: dict):
+    """Save an ideal prompt for reuse"""
+    try:
+        prompt_id = generate_uuid('prompt')
+        
+        saved_prompt = {
+            "id": prompt_id,
+            "name": prompt_data.get("name", "Untitled Prompt"),
+            "ideal_prompt": prompt_data.get("ideal_prompt", ""),
+            "original_prompt": prompt_data.get("original_prompt", ""),
+            "description": prompt_data.get("description", ""),
+            "category": prompt_data.get("category", "analysis"),
+            "file_pattern": prompt_data.get("file_pattern", "General data files"),
+            "created_at": datetime.now().isoformat(),
+        }
+        
+        saved_prompts_storage[prompt_id] = saved_prompt
+        logger.info(f"Saved prompt {prompt_id}: {saved_prompt['name']}")
+        
+        return {
+            "success": True,
+            "message": "Prompt saved successfully",
+            "prompt_id": prompt_id,
+            "prompt": saved_prompt
+        }
+        
+    except Exception as e:
+        logger.error(f"Error saving prompt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save prompt: {str(e)}")
+
+
+@router.get("/saved-prompts")
+def get_saved_prompts():
+    """Get all saved prompts"""
+    try:
+        prompts = list(saved_prompts_storage.values())
+        # Sort by creation date, newest first
+        prompts.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return {
+            "success": True,
+            "prompts": prompts,
+            "count": len(prompts)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching saved prompts: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch prompts: {str(e)}")
+
+
+@router.delete("/saved-prompts/{prompt_id}")
+def delete_saved_prompt(prompt_id: str):
+    """Delete a saved prompt"""
+    try:
+        if prompt_id in saved_prompts_storage:
+            deleted_prompt = saved_prompts_storage.pop(prompt_id)
+            logger.info(f"Deleted prompt {prompt_id}: {deleted_prompt['name']}")
+            return {
+                "success": True,
+                "message": "Prompt deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting prompt {prompt_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete prompt: {str(e)}")
+
+
+class PromptSuggestionsRequest(BaseModel):
+    """Request model for prompt suggestions"""
+    text_before_cursor: str
+    text_after_cursor: str = ""
+    files_context: List[Dict[str, Any]]
+    max_suggestions: Optional[int] = 4
+
+
+# Simple in-memory cache for common suggestion patterns
+suggestions_cache = {}
+CACHE_EXPIRY_SECONDS = 600  # 10 minutes - more aggressive caching
+
+
+@router.post("/prompt-suggestions/")
+def get_prompt_suggestions(request: PromptSuggestionsRequest):
+    """
+    Get AI-powered autocomplete suggestions for natural language data queries
+    Optimized for fast response times with caching
+    """
+    try:
+        from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
+        
+        # Create cache key from request context
+        cache_key = hash(f"{request.text_before_cursor.lower()[:50]}_{len(request.files_context)}")
+        current_time = datetime.now().timestamp()
+        
+        # Check cache first
+        if cache_key in suggestions_cache:
+            cached_data = suggestions_cache[cache_key]
+            if current_time - cached_data['timestamp'] < CACHE_EXPIRY_SECONDS:
+                logger.info(f"Returning cached suggestions for key: {cache_key}")
+                return {
+                    "success": True,
+                    "suggestions": cached_data['suggestions'],
+                    "cached": True,
+                    "processing_time_ms": 5  # Cached response time
+                }
+        
+        start_time = datetime.now()
+        
+        llm_service = get_llm_service()
+        if not llm_service.is_available():
+            return {
+                "success": False,
+                "error": "AI service unavailable",
+                "suggestions": []
+            }
+        
+        # Build optimized file context
+        files_summary = []
+        for i, file_info in enumerate(request.files_context, 1):
+            files_summary.append(
+                f"file_{i}: {file_info.get('name', 'unknown')} "
+                f"({file_info.get('totalRows', 0)} rows) - "
+                f"Columns: {', '.join(file_info.get('columns', [])[:8])}"
+            )
+        
+        files_context_str = "\n".join(files_summary)
+        
+        # Ultra-optimized system prompt for speed
+        system_prompt = """Fast autocomplete for data queries. Return 3-4 suggestions max.
+
+JSON format only:
+{
+  "suggestions": [
+    {
+      "text": "short text",
+      "description": "brief desc", 
+      "completion": "completion text",
+      "type": "operation|column|file_reference|phrase",
+      "confidence": 0.8
+    }
+  ]
+}"""
+
+        # Ultra-short user prompt for speed
+        user_prompt = f"""Text: "{request.text_before_cursor}"
+
+Files: {files_context_str}
+
+Generate 3 completions. Focus: operations, file refs, columns. JSON only."""
+
+        generation_params = get_llm_generation_params()
+        # Override for faster autocomplete
+        generation_params.update({
+            'temperature': 0.1,   # Slightly more variety but still fast
+            'max_tokens': 250,    # Even shorter for speed
+        })
+        
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt)
+        ]
+        
+        response = llm_service.generate_text(
+            messages=messages,
+            **generation_params
+        )
+        
+        if not response.success:
+            return {
+                "success": False,
+                "error": f"AI generation failed: {response.error}",
+                "suggestions": []
+            }
+        
+        # Parse AI response
+        try:
+            import json
+            suggestions_data = json.loads(response.content)
+            suggestions = suggestions_data.get('suggestions', [])
+            
+            # Validate and clean suggestions
+            valid_suggestions = []
+            for suggestion in suggestions[:request.max_suggestions]:
+                if suggestion.get('text') and suggestion.get('completion'):
+                    valid_suggestions.append({
+                        'text': suggestion.get('text', ''),
+                        'description': suggestion.get('description', 'AI suggestion'),
+                        'completion': suggestion.get('completion', suggestion.get('text', '')),
+                        'type': suggestion.get('type', 'phrase'),
+                        'confidence': min(max(suggestion.get('confidence', 0.5), 0.0), 1.0)
+                    })
+            
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            # Cache successful results
+            if valid_suggestions and len(request.text_before_cursor) > 5:
+                suggestions_cache[cache_key] = {
+                    'suggestions': valid_suggestions,
+                    'timestamp': current_time
+                }
+                # Clean old cache entries
+                if len(suggestions_cache) > 100:
+                    oldest_key = min(suggestions_cache.keys(), 
+                                   key=lambda k: suggestions_cache[k]['timestamp'])
+                    del suggestions_cache[oldest_key]
+            
+            logger.info(f"Generated {len(valid_suggestions)} suggestions in {processing_time:.0f}ms")
+            
+            return {
+                "success": True,
+                "suggestions": valid_suggestions,
+                "cached": False,
+                "processing_time_ms": round(processing_time, 1),
+                "files_analyzed": len(request.files_context)
+            }
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI suggestions JSON: {e}")
+            return {
+                "success": False,
+                "error": "Invalid AI response format",
+                "suggestions": []
+            }
+        
+    except Exception as e:
+        logger.error(f"Error generating prompt suggestions: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Suggestion generation failed: {str(e)}",
+            "suggestions": []
         }
 
 
@@ -653,6 +1019,6 @@ def health_check():
         "capabilities": {
             "max_files": 5,
             "supported_formats": ["csv", "excel", "json"],
-            "features": ["natural_language_queries", "sql_generation", "data_analysis"]
+            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions"]
         }
     }
