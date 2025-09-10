@@ -16,7 +16,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/templates", tags=["Templates"])
+router = APIRouter(prefix="/saved-templates", tags=["Saved Templates"])
 
 
 # Request/Response Models
@@ -62,7 +62,7 @@ class UpdateTemplateRequest(BaseModel):
 
 
 class TemplateResponse(BaseModel):
-    """Response model for template data"""
+    """Response model for template data with enhanced fields"""
     id: str
     name: str
     description: str
@@ -79,6 +79,10 @@ class TemplateResponse(BaseModel):
     last_used_at: Optional[str]
     rating: float
     rating_count: int
+    
+    # Enhanced template fields
+    template_content: Optional[str] = None
+    template_metadata: Optional[Dict[str, Any]] = None
 
 
 class TemplateListResponse(BaseModel):
@@ -442,6 +446,10 @@ class CreateTemplateFromQueryRequest(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Template tags")
     is_public: bool = Field(default=False, description="Make template public")
     created_by: Optional[str] = Field(None, description="Creator identifier")
+    
+    # Enhanced template data
+    template_content: Optional[str] = Field(None, description="Rich template content (ideal prompt)")
+    template_metadata: Optional[Dict[str, Any]] = Field(None, description="Enhanced template metadata including file patterns, transformation patterns, etc.")
 
 
 @router.post("/suggest", response_model=TemplateListResponse)
@@ -514,7 +522,25 @@ async def apply_template(request: TemplateApplicationRequest):
 async def create_template_from_query(request: CreateTemplateFromQueryRequest):
     """Create a new template from a successful query execution"""
     try:
-        # Prepare template metadata
+        # Debug logging - what data are we receiving from frontend?
+        logger.info(f"Template creation request received:")
+        logger.info(f"  Template name: {request.template_name}")
+        logger.info(f"  Template description: {request.template_description[:50]}...")
+        logger.info(f"  Template type: {request.template_type}")
+        logger.info(f"  Category: {request.category}")
+        logger.info(f"  Tags: {request.tags}")
+        logger.info(f"  Enhanced content present: {bool(request.template_content)}")
+        logger.info(f"  Enhanced metadata present: {bool(request.template_metadata)}")
+        if request.template_content:
+            logger.info(f"  Content length: {len(request.template_content)}")
+        if request.template_metadata:
+            logger.info(f"  Metadata keys: {list(request.template_metadata.keys())}")
+        if hasattr(request, 'query_data') and request.query_data:
+            logger.info(f"  Query data present: {bool(request.query_data)}")
+            if 'user_prompt' in request.query_data:
+                logger.info(f"  User prompt: {request.query_data['user_prompt'][:50]}...")
+        
+        # Prepare enhanced template metadata
         template_metadata = {
             'name': request.template_name,
             'description': request.template_description,
@@ -522,7 +548,9 @@ async def create_template_from_query(request: CreateTemplateFromQueryRequest):
             'category': request.category,
             'tags': request.tags,
             'is_public': request.is_public,
-            'created_by': request.created_by
+            'created_by': request.created_by,
+            'template_content': request.template_content,
+            'template_metadata': request.template_metadata
         }
         
         result = template_application_service.create_template_from_successful_query(

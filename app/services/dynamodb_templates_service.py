@@ -42,6 +42,17 @@ Template Configuration:
   - output_format: Expected output structure
   - sample_data: Example input/output data
 
+Enhanced Template Fields (Rich Data):
+- template_content: Rich template content (ideal prompt from AI optimization)
+- template_metadata: Enhanced metadata JSON blob containing:
+  - original_prompt: Original user prompt
+  - ideal_prompt: AI-optimized prompt
+  - file_pattern: File structure pattern for matching datasets
+  - improvements_made: AI explanations of optimizations
+  - file_schemas: Original file schemas used
+  - processing_context: Query execution context
+  - success_metrics: Success indicators from original query
+
 Example Items:
 1. Reconciliation Template:
    PK: "RECONCILIATION_TEMPLATE#bank_recon_001"
@@ -198,7 +209,7 @@ class DynamoDBTemplatesService:
         return obj
     
     def _ensure_required_fields(self, template_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure template has all required fields with default values"""
+        """Ensure template has all required fields with default values, including enhanced fields"""
         # Set defaults for missing fields
         template_data.setdefault('tags', [])
         template_data.setdefault('version', '1.0')
@@ -209,6 +220,10 @@ class DynamoDBTemplatesService:
         template_data.setdefault('last_used_at', None)
         template_data.setdefault('created_by', None)
         template_data.setdefault('template_config', {})
+        
+        # Enhanced template fields
+        template_data.setdefault('template_content', template_data.get('description', ''))
+        template_data.setdefault('template_metadata', {})
         
         # Ensure timestamps exist
         if 'created_at' not in template_data:

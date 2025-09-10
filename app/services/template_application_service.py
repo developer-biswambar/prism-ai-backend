@@ -126,20 +126,23 @@ class TemplateApplicationService:
     def create_template_from_successful_query(self, query_data: Dict[str, Any], 
                                             template_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create a new template from a successful query execution
+        Create a new template from a successful query execution with enhanced data
         
         Args:
             query_data: Successful query execution data
-            template_metadata: Template metadata (name, description, etc.)
+            template_metadata: Enhanced template metadata including:
+                - Basic fields: name, description, template_type, category, tags, etc.
+                - template_content: Rich template content (ideal prompt)
+                - template_metadata: Enhanced metadata with file patterns, transformation patterns, etc.
             
         Returns:
-            Created template information
+            Created template information with enhanced data
         """
         try:
             # Extract template configuration from successful query
             template_config = self._extract_template_config(query_data)
             
-            # Create template data with all required fields
+            # Create enhanced template data with all required fields
             current_time = datetime.utcnow().isoformat()
             template_data = {
                 'id': f"template_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
@@ -157,13 +160,27 @@ class TemplateApplicationService:
                 'usage_count': 0,
                 'last_used_at': None,
                 'rating': 0.0,
-                'rating_count': 0
+                'rating_count': 0,
+                
+                # Enhanced template fields
+                'template_content': template_metadata.get('template_content', template_metadata.get('description', '')),
+                'template_metadata': template_metadata.get('template_metadata', {})
             }
             
-            # Save template
+            # Log the enhanced template creation
+            logger.info(f"Creating enhanced template with rich data: {template_data['name']}")
+            logger.info(f"Template data keys: {list(template_data.keys())}")
+            if template_metadata.get('template_metadata'):
+                logger.info(f"Enhanced metadata includes: {list(template_metadata['template_metadata'].keys())}")
+            if template_data.get('template_content'):
+                logger.info(f"Template content length: {len(template_data['template_content'])}")
+            
+            # Save template with debug info
+            logger.info(f"Attempting to save template with {len(template_data)} fields")
             success = dynamodb_templates_service.save_template(template_data)
             if not success:
                 raise TemplateApplicationError("Failed to save template")
+            logger.info(f"Template saved successfully: {template_data['id']}")
             
             return {
                 'success': True,
@@ -173,6 +190,9 @@ class TemplateApplicationService:
             
         except Exception as e:
             logger.error(f"Error creating template from query: {e}")
+            logger.error(f"Template metadata keys: {list(template_metadata.keys()) if template_metadata else 'None'}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return {
                 'success': False,
                 'error': str(e)
@@ -449,8 +469,15 @@ class TemplateApplicationService:
                                     user_data: Dict[str, Any]) -> str:
         """Generate executable query from template"""
         try:
-            template_config = template.get('template_config', {})
-            prompt_template = template_config.get('prompt_template', '')
+            # Use enhanced template content first, fallback to old prompt_template
+            prompt_template = template.get('template_content', '')
+            if not prompt_template:
+                template_config = template.get('template_config', {})
+                prompt_template = template_config.get('prompt_template', '')
+            
+            logger.info(f"Applying template {template.get('name', 'unknown')} - using {'enhanced content' if template.get('template_content') else 'basic prompt_template'}")
+            if template.get('template_content'):
+                logger.info(f"Enhanced template content length: {len(template['template_content'])}")
             
             # Replace column placeholders
             query = prompt_template
@@ -468,6 +495,13 @@ class TemplateApplicationService:
                 file_context += f"File {i+1} ({file_info.get('filename', 'unnamed')}): "
                 file_context += f"columns {file_info.get('columns', [])}\n"
             
+            # Enhanced template metadata can provide additional context
+            template_metadata = template.get('template_metadata', {})
+            if template_metadata:
+                file_pattern = template_metadata.get('file_pattern', '')
+                if file_pattern:
+                    logger.info(f"Template expects file pattern: {file_pattern}")
+            
             # Enhance query with AI if needed
             if '{AI_ENHANCE}' in query:
                 enhanced_query = self._ai_enhance_query(query, file_context, template)
@@ -480,7 +514,7 @@ class TemplateApplicationService:
             return f"Error applying template: {str(e)}"
     
     def _ai_enhance_query(self, base_query: str, file_context: str, template: Dict[str, Any]) -> str:
-        """Use AI to enhance/optimize the generated query"""
+        """Use AI to enhance/optimize the generated query using enhanced template metadata if available"""
         try:
             messages = [
                 LLMMessage(
