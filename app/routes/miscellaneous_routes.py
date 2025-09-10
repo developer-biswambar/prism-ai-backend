@@ -551,6 +551,18 @@ def execute_custom_query(request: ExecuteQueryRequest):
             else:
                 raise HTTPException(status_code=500, detail=f"Unexpected files_data format: {type(files_data)}")
             
+            # Get total count before applying limit
+            total_count = None
+            if request.limit:
+                try:
+                    # Execute count query to get total records
+                    count_query = f"SELECT COUNT(*) as total FROM ({request.sql_query.strip()})"
+                    count_result = conn.execute(count_query).fetchone()
+                    total_count = count_result[0] if count_result else 0
+                except Exception as e:
+                    logger.warning(f"Failed to get total count: {e}")
+                    total_count = None
+            
             # Apply limit to the query if specified
             limited_query = request.sql_query.strip()
             if request.limit and not limited_query.upper().endswith(';'):
@@ -624,6 +636,7 @@ def execute_custom_query(request: ExecuteQueryRequest):
                 'success': True,
                 'data': result_records,
                 'row_count': row_count,
+                'total_count': total_count,  # Total records before limiting
                 'column_count': column_count,
                 'columns': list(result_df.columns) if len(result_df) > 0 else [],
                 'limited': request.limit is not None and row_count >= request.limit,
@@ -936,6 +949,12 @@ class PromptSuggestionsRequest(BaseModel):
     max_suggestions: Optional[int] = 4
 
 
+class IntentVerificationRequest(BaseModel):
+    """Request model for intent verification"""
+    user_prompt: str
+    files: List[FileReference]
+
+
 # Simple in-memory cache for common suggestion patterns
 suggestions_cache = {}
 CACHE_EXPIRY_SECONDS = 600  # 10 minutes - more aggressive caching
@@ -1093,6 +1112,58 @@ Generate 3 completions. Focus: operations, file refs, columns. JSON only."""
         }
 
 
+@router.post("/verify-intent")
+def verify_query_intent(request: IntentVerificationRequest):
+    """Verify and analyze query intent before execution"""
+    try:
+        from app.services.intent_service import QueryIntentExtractor
+        
+        # Get selected file data from file IDs
+        file_data_list = []
+        for file_ref in request.files:
+            try:
+                file_data = get_file_by_id(file_ref.file_id)
+                file_data_list.append(file_data)
+                
+            except Exception as e:
+                logger.error(f"Error preparing file {file_ref.file_id} for intent analysis: {str(e)}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Could not analyze file {file_ref.file_id}: {str(e)}"
+                )
+        
+        if not file_data_list:
+            raise HTTPException(status_code=400, detail="No valid files provided for analysis")
+        
+        # Extract intent using the new service with file data objects
+        intent_extractor = QueryIntentExtractor()
+        intent_summary = intent_extractor.extract_intent(request.user_prompt, file_data_list)
+        
+        logger.info(f"Intent verification completed for prompt: {request.user_prompt[:50]}...")
+        
+        return {
+            "success": True,
+            "intent_summary": intent_summary,
+            "original_prompt": request.user_prompt,
+            "files_count": len(request.files)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error verifying query intent: {str(e)}")
+        
+        # Clean up any temporary files in case of error
+        if 'selected_files' in locals():
+            for temp_file in selected_files:
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+        
+        raise HTTPException(status_code=500, detail=f"Intent verification failed: {str(e)}")
+
+
 @router.get("/health")
 def health_check():
     """Health check endpoint for miscellaneous service"""
@@ -1103,6 +1174,6 @@ def health_check():
         "capabilities": {
             "max_files": 5,
             "supported_formats": ["csv", "excel", "json"],
-            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions"]
+            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions", "intent_verification"]
         }
     }

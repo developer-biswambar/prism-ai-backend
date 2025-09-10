@@ -1,0 +1,450 @@
+# Query Intent Verification + Template & Consistency System - TODO
+
+## OVERVIEW
+Implement a system to ensure query accuracy and consistency for finance teams by:
+1. Verifying user intent before execution
+2. Building reusable templates from successful queries
+3. Providing consistency validation across team members
+
+## PHASE 1: QUERY INTENT VERIFICATION
+
+### Backend Development
+
+#### 1.1 Enhanced Intent Extraction Service
+- [ ] Create `QueryIntentExtractor` class in `app/services/intent_service.py`
+- [ ] Implement comprehensive intent analysis method:
+  - Extract operation type (JOIN, GROUP BY, FILTER, etc.)
+  - Identify files involved and their roles
+  - Determine matching logic/columns
+  - Estimate expected result size and processing time
+  - Parse business intent from natural language
+  - **NEW: Generate sample data previews from actual files**
+  - **NEW: Create data flow steps for visualization**
+  - **NEW: Calculate processing estimates and risk factors**
+  - **NEW: Detect data quality issues and warnings**
+- [ ] Implement file sampling service:
+  - Read first 5-10 rows from each input file
+  - Analyze column types and data patterns
+  - Detect potential join key matches
+  - Estimate result set characteristics
+- [ ] Add intent extraction to existing query generation flow
+- [ ] Create intent validation endpoint: `POST /api/miscellaneous/verify-intent`
+- [ ] Add file analysis endpoint: `POST /api/miscellaneous/analyze-files` for sample data
+
+#### 1.2 Enhanced Query Generation Response with Visual Data
+- [ ] Modify `process_natural_language_query` to include comprehensive intent data
+- [ ] Add enhanced intent summary to response:
+  ```python
+  {
+    "intent_summary": {
+      "operation_type": "LEFT_JOIN",
+      "business_intent": "Find customers lost between periods",
+      "plain_language_summary": "Find customers who were active in January but not in February",
+      
+      "data_flow": {
+        "steps": [
+          {"type": "input", "file": "customers_jan.csv", "role": "primary"},
+          {"type": "operation", "name": "LEFT JOIN", "condition": "customer_id"},
+          {"type": "input", "file": "customers_feb.csv", "role": "comparison"},
+          {"type": "filter", "condition": "WHERE feb.customer_id IS NULL"},
+          {"type": "output", "description": "Lost customers list"}
+        ]
+      },
+      
+      "files_involved": [
+        {
+          "role": "primary", 
+          "file": "file_1", 
+          "description": "January customers",
+          "sample_data": [
+            {"customer_id": 123, "name": "John", "plan": "Premium"},
+            {"customer_id": 456, "name": "Jane", "plan": "Basic"}
+          ],
+          "statistics": {"rows": 1250, "columns": 8, "size_mb": 2.3}
+        },
+        {
+          "role": "comparison", 
+          "file": "file_2", 
+          "description": "February customers",
+          "sample_data": [
+            {"customer_id": 456, "name": "Jane", "plan": "Basic"},
+            {"customer_id": 789, "name": "Bob", "plan": "Premium"}
+          ],
+          "statistics": {"rows": 1205, "columns": 8, "size_mb": 2.1}
+        }
+      ],
+      
+      "matching_logic": {
+        "column": "customer_id",
+        "type": "exact_match",
+        "description": "Matching customers by their unique ID"
+      },
+      
+      "expected_output": {
+        "description": "Records in file_1 missing from file_2",
+        "estimated_rows": {"min": 40, "max": 60, "likely": 45},
+        "sample_result": [
+          {"customer_id": 123, "name": "John", "plan": "Premium", "status": "CHURNED"}
+        ],
+        "columns": ["customer_id", "name", "plan", "status"]
+      },
+      
+      "processing_estimates": {
+        "execution_time_seconds": {"min": 0.5, "max": 2.0},
+        "memory_usage_mb": 15,
+        "complexity": "LOW"
+      },
+      
+      "confidence": "HIGH",
+      "risk_factors": ["None detected"],
+      "data_quality_warnings": []
+    }
+  }
+  ```
+
+### Frontend Development
+
+#### 1.3 Visual Intent Verification Modal
+- [ ] Create `IntentVerificationModal.jsx` component with enhanced visual design
+- [ ] Design modal layout with four main sections:
+
+  **Section 1: Data Flow Diagram**
+  - [ ] Create interactive flowchart showing data transformation:
+    ```
+    [File A: customers_jan.csv] 
+           ↓ (customer_id)
+       [LEFT JOIN] ← Visual join indicator
+           ↓ (customer_id) 
+    [File B: customers_feb.csv]
+           ↓
+    [Result: Lost Customers (45 rows)]
+    ```
+  - [ ] Use icons and colors to represent different operations
+  - [ ] Show connection lines between files and operations
+  - [ ] Add hover tooltips for technical details
+
+  **Section 2: Sample Data Preview**
+  - [ ] Show actual sample rows from source files (first 3-5 rows)
+  - [ ] Display expected output format with sample results
+  - [ ] Use table format with highlighted matching columns:
+    ```
+    BEFORE (Jan File):          AFTER (Result):
+    ┌─────────┬──────────┐     ┌─────────┬──────────┬────────────┐
+    │ cust_id │   name   │     │ cust_id │   name   │   status   │
+    ├─────────┼──────────┤     ├─────────┼──────────┼────────────┤
+    │   123   │   John   │     │   123   │   John   │ CHURNED    │
+    │   456   │   Jane   │     │   789   │   Mike   │ CHURNED    │
+    └─────────┴──────────┘     └─────────┴──────────┴────────────┘
+    ```
+
+  **Section 3: Summary Statistics**
+  - [ ] Display key metrics in card format:
+    - Input file sizes (rows, columns, file size)
+    - Expected output size range (e.g., "45-60 rows expected")
+    - Processing time estimate
+    - Memory usage estimate
+    - Confidence level indicator (HIGH/MEDIUM/LOW)
+
+  **Section 4: Plain Language Summary**
+  - [ ] Generate business-friendly description:
+    "Find customers who were active in January but not in February"
+  - [ ] Include potential data quality warnings
+  - [ ] Show operation complexity indicator
+
+- [ ] Add interactive elements:
+  - [ ] Confirm/Clarify buttons
+  - [ ] "Show SQL Query" toggle
+  - [ ] "Modify Query" option
+  - [ ] Risk assessment indicators
+- [ ] Add modal to `MiscellaneousPreview.jsx` workflow
+- [ ] Implement clarification flow (loop back to prompt input)
+
+#### 1.4 Integration with Existing Flow
+- [ ] Modify processing flow: Prompt → SQL Generation → Intent Verification → Execution
+- [ ] Update `MiscellaneousFlow.jsx` to handle new verification step
+- [ ] Add new step to progress indicator
+- [ ] Handle intent verification state management
+
+## PHASE 2: TEMPLATE SYSTEM FOUNDATION
+
+### Backend Development
+
+#### 2.1 Database Schema
+- [ ] Create migration for template tables:
+  ```sql
+  CREATE TABLE query_templates (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    category VARCHAR(100),
+    business_intent TEXT,
+    original_prompt TEXT,
+    sql_pattern TEXT,
+    intent_data JSONB,
+    success_rate DECIMAL DEFAULT 1.0,
+    usage_count INTEGER DEFAULT 1,
+    created_by UUID,
+    team_id UUID,
+    is_shared BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  );
+
+  CREATE TABLE template_executions (
+    id UUID PRIMARY KEY,
+    template_id UUID REFERENCES query_templates(id),
+    user_id UUID,
+    execution_time DECIMAL,
+    result_count INTEGER,
+    success BOOLEAN,
+    error_message TEXT,
+    executed_at TIMESTAMP DEFAULT NOW()
+  );
+
+  CREATE TABLE template_patterns (
+    id UUID PRIMARY KEY,
+    template_id UUID REFERENCES query_templates(id),
+    pattern_type VARCHAR(50), -- 'file_count', 'operation_type', 'business_category'
+    pattern_value TEXT,
+    weight DECIMAL DEFAULT 1.0
+  );
+  ```
+
+#### 2.2 Template Service
+- [ ] Create `TemplateService` class in `app/services/template_service.py`
+- [ ] Implement template creation:
+  - Extract patterns from successful queries
+  - Generate template metadata
+  - Store template with usage statistics
+- [ ] Implement pattern matching algorithm:
+  - Compare operation types
+  - Match file patterns (count, types)
+  - Analyze business intent similarity
+  - Calculate match confidence scores
+- [ ] Create template management endpoints:
+  - `POST /api/templates/save` - Save new template
+  - `GET /api/templates/search` - Find matching templates
+  - `GET /api/templates/user/{user_id}` - User's templates
+  - `PUT /api/templates/{id}` - Update template
+  - `DELETE /api/templates/{id}` - Delete template
+
+#### 2.3 Pattern Recognition Engine
+- [ ] Implement SQL pattern extraction:
+  - Parse JOIN types and conditions
+  - Identify aggregation patterns
+  - Extract filtering logic
+  - Recognize common business operations
+- [ ] Create business intent classifier:
+  - Reconciliation patterns
+  - Data comparison patterns
+  - Aggregation/reporting patterns
+  - Data cleaning patterns
+
+### Frontend Development
+
+#### 2.4 Template Suggestion System
+- [ ] Create `TemplateSuggestions.jsx` component
+- [ ] Display template matches before intent verification:
+  - Template name and description
+  - Match confidence percentage
+  - Success rate statistics
+  - Last used date
+  - Created by information
+- [ ] Add "Use Template" vs "Custom Query" options
+- [ ] Implement template selection flow
+
+#### 2.5 Template Save Dialog
+- [ ] Create `SaveTemplateModal.jsx` component
+- [ ] Show after successful query execution
+- [ ] Allow user to:
+  - Name the template
+  - Categorize it
+  - Add description
+  - Set sharing permissions
+  - Preview what will be saved
+
+## PHASE 3: TEMPLATE LIBRARY & MANAGEMENT
+
+### Backend Development
+
+#### 3.1 Template Analytics
+- [ ] Implement usage tracking:
+  - Execution success rates
+  - Performance metrics
+  - Error pattern analysis
+  - User adoption rates
+- [ ] Create analytics endpoints:
+  - `GET /api/templates/analytics/{id}` - Template performance
+  - `GET /api/templates/trending` - Popular templates
+  - `GET /api/templates/recommendations/{user_id}` - Personalized suggestions
+
+#### 3.2 Team Collaboration Features
+- [ ] Implement template sharing:
+  - Team-wide templates
+  - Permission management
+  - Version control for templates
+- [ ] Add template approval workflow:
+  - Submit for team approval
+  - Admin approval process
+  - Certified template badges
+
+### Frontend Development
+
+#### 3.3 Template Library Interface
+- [ ] Create `TemplateLibrary.jsx` component
+- [ ] Implement template browsing:
+  - Category filtering
+  - Search functionality
+  - Sort by popularity/date/success rate
+  - Template preview with sample results
+- [ ] Add template management features:
+  - Edit template details
+  - View usage statistics
+  - Share/unshare templates
+  - Delete templates
+
+#### 3.4 Template Usage Dashboard
+- [ ] Create analytics dashboard for templates
+- [ ] Show template performance metrics:
+  - Success rate over time
+  - Usage frequency
+  - Error patterns
+  - User feedback
+
+## PHASE 4: CONSISTENCY VALIDATION
+
+### Backend Development
+
+#### 4.1 Result Consistency Engine
+- [ ] Implement result comparison service:
+  - Compare current results with historical runs
+  - Detect significant deviations
+  - Analyze seasonal patterns
+  - Flag anomalies
+- [ ] Create consistency validation endpoints:
+  - `POST /api/results/validate` - Validate current results
+  - `GET /api/results/history/{pattern}` - Historical results
+  - `GET /api/results/anomalies` - Detected anomalies
+
+#### 4.2 Historical Data Management
+- [ ] Store query execution history:
+  - Query fingerprints for matching
+  - Result metadata (row counts, key statistics)
+  - Execution context (files used, date, user)
+- [ ] Implement data retention policies:
+  - Archive old executions
+  - Maintain statistical summaries
+  - Clean up unused data
+
+### Frontend Development
+
+#### 4.3 Consistency Dashboard
+- [ ] Create result validation display:
+  - Current vs historical comparison
+  - Confidence indicators
+  - Anomaly warnings
+  - Pattern analysis charts
+- [ ] Add consistency alerts:
+  - Unusual result sizes
+  - Significant deviations
+  - Data quality issues
+
+#### 4.4 Team Consistency Reports
+- [ ] Implement team-wide consistency tracking:
+  - Query success rates by user
+  - Template adoption rates
+  - Common error patterns
+  - Consistency trends over time
+
+## PHASE 5: ADVANCED FEATURES
+
+### 5.1 Smart Recommendations
+- [ ] Implement ML-based query suggestions
+- [ ] Add query optimization recommendations
+- [ ] Create data quality suggestions
+- [ ] Implement best practice recommendations
+
+### 5.2 Audit & Compliance
+- [ ] Add comprehensive audit logging:
+  - Query intentions vs executions
+  - Template usage tracking
+  - Result validation history
+  - User decision points
+- [ ] Create compliance reports:
+  - Query accuracy metrics
+  - Template governance
+  - Data processing accountability
+
+### 5.3 Performance Optimization
+- [ ] Implement query result caching
+- [ ] Add template preloading
+- [ ] Optimize pattern matching algorithms
+- [ ] Add query performance analytics
+
+## IMPLEMENTATION PRIORITY
+
+### High Priority (Phase 1)
+1. Intent Verification Modal - Core user experience
+2. Intent Extraction Service - Backend foundation
+3. Integration with existing flow - Working end-to-end
+
+### Medium Priority (Phase 2)
+1. Template creation and storage
+2. Basic pattern matching
+3. Template suggestion system
+
+### Lower Priority (Phases 3-5)
+1. Advanced analytics
+2. Team collaboration features  
+3. ML-based recommendations
+
+## TECHNICAL CONSIDERATIONS
+
+### Database
+- Use PostgreSQL JSONB for flexible intent data storage
+- Implement proper indexing for pattern matching queries
+- Consider partitioning for large template execution history
+
+### Performance
+- Cache frequently used templates
+- Implement async processing for complex pattern matching
+- Use database views for common analytics queries
+
+### Security
+- Implement template access controls
+- Audit template sharing and usage
+- Validate template SQL for security issues
+
+### Testing Strategy
+- Unit tests for intent extraction logic
+- Integration tests for template matching
+- E2E tests for complete verification flow
+- Performance tests for pattern matching at scale
+
+## SUCCESS METRICS
+
+### User Experience
+- Query accuracy improvement (before/after intent verification)
+- Time to successful result (with template suggestions)
+- User confidence ratings
+- Error reduction rates
+
+### Template Adoption
+- Template creation rate
+- Template reuse percentage
+- Team sharing adoption
+- Template success rates
+
+### System Performance
+- Intent verification accuracy
+- Pattern matching precision/recall
+- Query execution success rates
+- System response times
+
+---
+
+## NOTES
+- Start with Phase 1 for immediate value
+- Gather user feedback before building advanced features  
+- Focus on finance team specific patterns and terminology
+- Consider integration with existing prompt management system
+- Plan for gradual rollout with feature flags

@@ -378,6 +378,7 @@ from app.routes.recent_results_routes import router as recent_results_router
 from app.routes.unified_rules_router import unified_rules_router
 from app.routes.transformation_routes import router as transformation_router
 from app.routes.miscellaneous_routes import router as miscellaneous_router
+from app.routes.template_routes import router as template_router
 
 app.include_router(health_routes)
 app.include_router(reconciliation_router)
@@ -396,6 +397,7 @@ app.include_router(unified_rules_router)
 
 app.include_router(transformation_router)
 app.include_router(miscellaneous_router)
+app.include_router(template_router)
 
 print("✅ All routes loaded successfully (optimized reconciliation + AI regex generation + miscellaneous data processing enabled)")
 

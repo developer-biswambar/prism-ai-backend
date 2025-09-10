@@ -291,6 +291,15 @@ class AIQueryGenerator:
 
 ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
 
+🚨 CRITICAL: CTE SYNTAX MUST BE PERFECT - COMMON ERROR PATTERN TO AVOID:
+❌ NEVER WRITE THIS (causes syntax error):
+WITH demographics AS (SELECT ... FROM file_1),
+  SELECT age_category FROM demographics -- ERROR: extra comma + indented SELECT
+
+✅ ALWAYS WRITE THIS:
+WITH demographics AS (SELECT ... FROM file_1)
+SELECT age_category FROM demographics -- CORRECT: no comma before final SELECT
+
 CRITICAL COLUMN USAGE RULES:
 1. NEVER use column names that are not explicitly listed in the schema below
 2. NEVER guess or assume column names based on user descriptions
@@ -305,11 +314,18 @@ ADVANCED ANALYSIS CAPABILITIES:
 
 🔍 RECONCILIATION OPERATIONS:
 - Multi-file matching: Use FULL OUTER JOIN to find matched/unmatched records
-- Pattern extraction: Use REGEXP_EXTRACT() for extracting patterns from text
-- Tolerance matching: Use ABS(value1 - value2) <= tolerance for numeric comparisons
+- Pattern extraction: Use REGEXP_EXTRACT(CAST(column AS VARCHAR), pattern) for extracting patterns (always cast to VARCHAR first)
+- Tolerance matching: Use ABS(value1 - value2) <= tolerance for numeric comparisons on NUMERIC columns
+- Amount comparisons: For numeric columns, use direct comparison WITHOUT regex extraction
+- PREFERRED: Simple JOIN with WHERE clause for tolerance matching
 - Fuzzy matching: Use SIMILARITY() or LEVENSHTEIN() for text similarity
 - Date matching: Use CAST(column AS DATE) for proper date comparisons
 - Key generation: Create composite keys using CONCAT() or ||
+
+RECONCILIATION BEST PRACTICE - KEEP IT SIMPLE:
+SELECT * FROM file_1 f1 
+FULL OUTER JOIN file_2 f2 ON f1."Reference" = f2."Ref_Number" 
+WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
 
 🔧 TRANSFORMATION OPERATIONS:  
 - Data cleaning: Use TRIM(), UPPER(), LOWER(), REPLACE(), REGEXP_REPLACE()
@@ -317,6 +333,36 @@ ADVANCED ANALYSIS CAPABILITIES:
 - Date parsing: Use CASE WHEN column IS NOT NULL AND column != '' THEN STRPTIME(column, 'format') ELSE NULL END
 - Derivation: Create calculated columns with CASE WHEN, mathematical operations
 - Aggregation: Use GROUP BY with SUM(), COUNT(), AVG(), MIN(), MAX()
+
+📊 DATA TYPE HANDLING:
+- NUMERIC columns (DOUBLE, INTEGER, DECIMAL): Use direct comparison operators (=, <, >, <=, >=)
+- For tolerance matching with numeric columns: ABS(col1 - col2) <= tolerance_value
+- NEVER use REGEXP_EXTRACT on numeric columns - they are already numbers
+- VARCHAR columns: Use REGEXP_EXTRACT(), LIKE, string functions
+- If you need regex on numeric data: REGEXP_EXTRACT(CAST(numeric_column AS VARCHAR), pattern)
+- Always check column data types in the schema before choosing operations
+- Complex queries with multiple CTEs, window functions, and advanced logic are ENCOURAGED
+- The key is proper column aliasing and scope management, NOT query simplification
+
+EXAMPLE - AMOUNT TOLERANCE MATCHING:
+✅ CORRECT - Simple approach: 
+  SELECT * FROM file_1 f1 
+  FULL OUTER JOIN file_2 f2 ON f1."Reference" = f2."Ref_Number" 
+  WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
+
+✅ CORRECT - With CTE (NOTICE: NO COMMA before final SELECT):
+WITH matched_records AS (
+  SELECT f1.*, f2.*, 
+         ABS(f1."Amount" - f2."Net_Amount") as amount_diff
+  FROM file_1 f1 
+  FULL OUTER JOIN file_2 f2 ON f1."Reference" = f2."Ref_Number"
+)
+SELECT * FROM matched_records 
+WHERE amount_diff <= 0.01
+
+❌ WRONG: 
+  - REGEXP_EXTRACT(f1."Amount_Text", pattern) -- Amount_Text is DOUBLE
+  - Using f1.column in WHERE clause when selecting from CTE
 - Pivoting: Use PIVOT/UNPIVOT or conditional aggregation
 - String manipulation: SPLIT(), SUBSTRING(), LENGTH(), POSITION()
 
@@ -360,6 +406,91 @@ DuckDB Advanced Features Available:
 - Array and JSON functions
 - Complex CASE statements and conditional logic
 - Temporary tables and views for multi-step processing
+
+🚨 CRITICAL CTE SYNTAX RULES:
+1. CTE syntax: WITH cte_name AS (SELECT ...) SELECT ... (NO COMMA before final SELECT)
+2. Multiple CTEs: WITH cte1 AS (...), cte2 AS (...) SELECT ... (comma between CTEs, NO comma before final SELECT)
+3. When using CTEs (WITH clause), table aliases from inner query are NOT available in outer query
+4. If you create a CTE, reference columns directly from the CTE in the outer SELECT
+5. Complex CTEs are fine - just ensure proper column aliasing and scope management
+6. For tolerance matching, you can use CTEs but alias all columns properly
+7. When joining in CTEs, alias columns with descriptive names for the outer query
+
+❌ SYNTAX ERROR - NEVER DO THIS:
+WITH demographics AS (
+  SELECT ...
+  FROM file_1
+),
+  SELECT ... -- ❌ WRONG: Extra comma and indented SELECT
+
+✅ CORRECT CTE SYNTAX:
+WITH demographics AS (
+  SELECT ...
+  FROM file_1
+)
+SELECT ... -- ✅ CORRECT: No comma, SELECT starts at beginning
+
+CTE SCOPING EXAMPLES:
+❌ WRONG:
+WITH reconciliation_data AS (
+  SELECT f1.*, f2.* FROM file_1 f1 
+  FULL OUTER JOIN file_2 f2 ON f1.reference = f2.ref_number
+)
+SELECT * FROM reconciliation_data WHERE f1.amount > 100  -- f1 doesn't exist here!
+
+✅ CORRECT - Complex single CTE (NOTICE: NO COMMA before SELECT):
+WITH reconciliation_data AS (
+  SELECT 
+    f1.reference as file1_reference,
+    f1.amount as file1_amount,
+    f2.ref_number as file2_reference, 
+    f2.total_amount as file2_amount,
+    ABS(f1.amount - f2.total_amount) as amount_difference,
+    CASE 
+      WHEN f1.reference IS NULL THEN 'Missing in File 1'
+      WHEN f2.ref_number IS NULL THEN 'Missing in File 2'
+      WHEN ABS(f1.amount - f2.total_amount) <= 0.01 THEN 'Matched'
+      ELSE 'Amount Mismatch'
+    END as reconciliation_status
+  FROM file_1 f1 
+  FULL OUTER JOIN file_2 f2 ON f1.reference = f2.ref_number
+)
+SELECT * FROM reconciliation_data 
+WHERE reconciliation_status = 'Matched' 
+  AND file1_amount > 100
+
+✅ ADVANCED - Multiple CTEs (NOTICE: Commas between CTEs, NO comma before final SELECT):
+WITH file1_prepared AS (
+  SELECT 
+    UPPER(TRIM(reference)) as clean_reference,
+    CAST(amount AS DOUBLE) as normalized_amount,
+    *
+  FROM file_1
+), 
+file2_prepared AS (
+  SELECT 
+    UPPER(TRIM(ref_number)) as clean_reference,
+    CAST(total_amount AS DOUBLE) as normalized_amount,
+    *
+  FROM file_2
+),
+reconciliation_results AS (
+  SELECT 
+    f1.clean_reference as file1_ref,
+    f1.normalized_amount as file1_amt,
+    f2.clean_reference as file2_ref,
+    f2.normalized_amount as file2_amt,
+    ABS(f1.normalized_amount - f2.normalized_amount) as amount_diff,
+    CASE 
+      WHEN f1.clean_reference IS NULL THEN 'Missing in File 1'
+      WHEN f2.clean_reference IS NULL THEN 'Missing in File 2'
+      WHEN ABS(f1.normalized_amount - f2.normalized_amount) <= 0.01 THEN 'Matched'
+      ELSE 'Amount Mismatch'
+    END as status
+  FROM file1_prepared f1
+  FULL OUTER JOIN file2_prepared f2 ON f1.clean_reference = f2.clean_reference
+)
+SELECT * FROM reconciliation_results WHERE status = 'Matched'
 
 CRITICAL DATE/TIME HANDLING:
 - Date columns are stored as TEXT/STRING - always cast them first
@@ -692,6 +823,11 @@ class MiscellaneousProcessor:
                     else:
                         result_data = preview_df
                     
+                    # Generate intent summary after successful execution
+                    intent_summary = self._generate_intent_summary_post_execution(
+                        user_prompt, files_data, generated_sql, result_df, table_schemas
+                    )
+                    
                     return {
                         'success': True,
                         'generated_sql': generated_sql,
@@ -707,6 +843,7 @@ class MiscellaneousProcessor:
                             'description': sql_result.get('description', ''),
                             'tables_used': list(table_schemas.keys())
                         },
+                        'intent_summary': intent_summary,  # NEW: Add intent summary for visualization
                         'warnings': ['Results limited to first 100 rows for preview. Use "Open in Data Viewer" to see all results.'] if is_limited else [],
                         'errors': [],
                         # Store source data and schemas for execute query functionality
@@ -1059,3 +1196,197 @@ class MiscellaneousProcessor:
     def list_active_processes(self) -> List[str]:
         """List all active process IDs"""
         return list(self.storage.keys())
+    
+    def _generate_intent_summary_post_execution(
+        self, 
+        user_prompt: str, 
+        files_data: List[Dict[str, Any]], 
+        generated_sql: str, 
+        result_df: pd.DataFrame,
+        table_schemas: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+        """
+        Generate intent summary after successful execution with actual results
+        """
+        try:
+            # Get operation type from SQL analysis
+            operation_type = self._classify_query_type(generated_sql)
+            
+            # Create files analysis with sample data
+            files_involved = []
+            for i, file_data in enumerate(files_data):
+                df = file_data['dataframe']
+                sample_data = df.head(3).to_dict('records') if len(df) > 0 else []
+                
+                # Clean sample data for JSON serialization
+                for row in sample_data:
+                    for key, value in row.items():
+                        if pd.isna(value):
+                            row[key] = None
+                        elif isinstance(value, (pd.Timestamp, pd.NaT.__class__)):
+                            row[key] = str(value)
+                
+                files_involved.append({
+                    "role": "primary" if i == 0 else "secondary",
+                    "file": file_data.get('filename', f'file_{i+1}'),
+                    "description": f"Input file {i+1}",
+                    "sample_data": sample_data,
+                    "statistics": {
+                        "rows": len(df),
+                        "columns": len(df.columns),
+                        "size_mb": round(df.memory_usage(deep=True).sum() / (1024*1024), 2)
+                    }
+                })
+            
+            # Create data flow steps
+            data_flow_steps = []
+            for i, file_info in enumerate(files_involved):
+                data_flow_steps.append({
+                    "type": "input",
+                    "file": file_info["file"],
+                    "role": file_info["role"],
+                    "rows": file_info["statistics"]["rows"]
+                })
+            
+            # Add operation step based on SQL analysis
+            if "JOIN" in operation_type.upper():
+                data_flow_steps.append({
+                    "type": "operation",
+                    "name": operation_type.upper().replace("_", " "),
+                    "condition": "data joining"
+                })
+            elif "GROUP" in operation_type.upper() or "aggregation" in operation_type:
+                data_flow_steps.append({
+                    "type": "operation", 
+                    "name": "GROUP BY & AGGREGATE",
+                    "condition": "grouping and calculations"
+                })
+            else:
+                data_flow_steps.append({
+                    "type": "operation",
+                    "name": operation_type.upper().replace("_", " "),
+                    "condition": "data processing"
+                })
+            
+            # Add output step
+            data_flow_steps.append({
+                "type": "output",
+                "description": "Processed results",
+                "estimated_rows": len(result_df)
+            })
+            
+            # Generate sample result preview
+            sample_result = result_df.head(2).to_dict('records') if len(result_df) > 0 else []
+            for row in sample_result:
+                for key, value in row.items():
+                    if pd.isna(value):
+                        row[key] = None
+                    elif isinstance(value, (pd.Timestamp, pd.NaT.__class__)):
+                        row[key] = str(value)
+            
+            # Calculate processing estimates (post-execution actuals)
+            total_input_rows = sum(f["statistics"]["rows"] for f in files_involved)
+            total_size_mb = sum(f["statistics"]["size_mb"] for f in files_involved)
+            
+            # Generate plain language summary using AI
+            plain_language_summary = self._generate_plain_language_summary(
+                user_prompt, operation_type, files_involved, len(result_df)
+            )
+            
+            return {
+                "operation_type": operation_type.upper(),
+                "business_intent": f"Data {operation_type.replace('_', ' ')} operation",
+                "plain_language_summary": plain_language_summary,
+                "data_flow": {"steps": data_flow_steps},
+                "files_involved": files_involved,
+                "matching_logic": {
+                    "description": "SQL-based data processing",
+                    "type": "sql_operation"
+                },
+                "expected_output": {
+                    "description": f"Results from {operation_type.replace('_', ' ')} operation",
+                    "estimated_rows": {"actual": len(result_df)},
+                    "sample_result": sample_result,
+                    "columns": list(result_df.columns) if len(result_df) > 0 else []
+                },
+                "processing_estimates": {
+                    "execution_time_seconds": {"actual": "completed"},
+                    "memory_usage_mb": round(total_size_mb * 1.5, 1),
+                    "complexity": "LOW" if len(result_df) < 1000 else "MEDIUM" if len(result_df) < 10000 else "HIGH"
+                },
+                "confidence": "HIGH",
+                "risk_factors": self._assess_post_execution_risks(result_df, total_input_rows),
+                "data_quality_warnings": self._check_data_quality_warnings(result_df)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating intent summary: {str(e)}")
+            # Return minimal intent summary on error
+            return {
+                "operation_type": "DATA_PROCESSING",
+                "business_intent": "Data processing operation",
+                "plain_language_summary": user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt,
+                "data_flow": {"steps": []},
+                "files_involved": [],
+                "matching_logic": {},
+                "expected_output": {"description": "Processed data"},
+                "processing_estimates": {"complexity": "UNKNOWN"},
+                "confidence": "LOW",
+                "risk_factors": ["Intent analysis failed"],
+                "data_quality_warnings": []
+            }
+    
+    def _generate_plain_language_summary(
+        self, user_prompt: str, operation_type: str, files_involved: List[Dict], result_count: int
+    ) -> str:
+        """Generate business-friendly plain language summary"""
+        if "join" in operation_type.lower():
+            if len(files_involved) >= 2:
+                return f"Combine data from {files_involved[0]['file']} and {files_involved[1]['file']} to create {result_count} result records"
+        elif "aggregation" in operation_type.lower() or "group" in operation_type.lower():
+            return f"Group and summarize data to produce {result_count} aggregated records"
+        elif "filter" in operation_type.lower():
+            return f"Filter data based on specified conditions, resulting in {result_count} matching records"
+        elif "delta" in operation_type.lower():
+            return f"Analyze changes between datasets, identifying {result_count} difference records"
+        else:
+            return f"Process data as requested: {user_prompt[:80]}... (produced {result_count} records)"
+    
+    def _assess_post_execution_risks(self, result_df: pd.DataFrame, total_input_rows: int) -> List[str]:
+        """Assess risks after execution based on actual results"""
+        risks = []
+        
+        if len(result_df) == 0:
+            risks.append("Query returned no results - check filter conditions")
+        elif len(result_df) > total_input_rows * 2:
+            risks.append("Result set is significantly larger than input - possible cartesian product")
+        elif len(result_df) > 50000:
+            risks.append("Large result set - may impact performance")
+        
+        if len(risks) == 0:
+            risks.append("None detected")
+            
+        return risks
+    
+    def _check_data_quality_warnings(self, result_df: pd.DataFrame) -> List[str]:
+        """Check for data quality issues in results"""
+        warnings = []
+        
+        if len(result_df) == 0:
+            return warnings
+            
+        # Check for columns with all null values
+        null_columns = []
+        for col in result_df.columns:
+            if result_df[col].isna().all():
+                null_columns.append(col)
+        
+        if null_columns:
+            warnings.append(f"Columns with all null values: {', '.join(null_columns)}")
+        
+        # Check for duplicate rows
+        duplicate_count = result_df.duplicated().sum()
+        if duplicate_count > 0:
+            warnings.append(f"Found {duplicate_count} duplicate rows in results")
+            
+        return warnings

@@ -40,28 +40,6 @@ Transform customer data by adding static fields: data_source='Customer Master Fi
 - ❌ **FAIL**: If account_summary is empty or blank
 - ✅ **PASS**: If account_summary contains proper format like "Premium account with balance $15000.5"
 
----
-
-## 🎯 **Test C2: Customer Tier Classification**
-
-### Steps:
-1. Use **`customers_test.csv`**
-2. Enter this prompt:
-
-**🤖 PROMPT:**
-```
-Create customer tiers based on balance: VIP (≥$20k), Premium (≥$10k), Standard (≥$1k), Basic (others). Also add status descriptions for Active, Suspended, and other statuses.
-```
-
-### ✅ **Expected Results:**
-- **VIP Customers**: 2 customers (CUST004: $25k, CUST010: $22k)
-- **Premium Customers**: 2 customers (CUST001: $15k, CUST007: $18.5k)
-- **Standard Customers**: 4 customers (balance $1k-$10k)
-- **Basic Customers**: 2 customers (balance <$1k)
-- **Status Descriptions**: Active = "Account is active and in good standing"
-
----
-
 ## 🎯 **Test C3: Personal Information Formatting**
 
 ### Steps:
