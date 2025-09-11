@@ -126,14 +126,31 @@ class ColumnMappingRequest(BaseModel):
 
 
 class SmartExecutionResponse(BaseModel):
-    """Response model for smart execution results"""
-    status: str = Field(..., description="Execution status: success, needs_mapping, failed")
-    data: Optional[Any] = Field(None, description="Execution results if successful")
+    """Response model for smart execution results - same as MiscellaneousResponse with additional fields"""
+    # Base fields from MiscellaneousResponse
+    success: bool
+    message: str
     process_id: Optional[str] = Field(None, description="Process ID for result retrieval")
-    execution_method: Optional[str] = Field(None, description="Method used: exact, mapped")
+    generated_sql: Optional[str] = None
+    row_count: Optional[int] = None
+    processing_time_seconds: Optional[float] = None
+    errors: Optional[List[str]] = []
+    warnings: Optional[List[str]] = []
+    
+    # Data field for results
+    data: Optional[Any] = Field(None, description="Execution results if successful")
+    
+    # Smart execution specific fields
+    execution_method: Optional[str] = Field(None, description="Method used: exact, mapped, ai_assisted")
     applied_mapping: Optional[Dict[str, str]] = Field(None, description="Applied column mapping")
-    suggestions: Optional[Dict[str, List[str]]] = Field(None, description="Column mapping suggestions")
-    error: Optional[str] = Field(None, description="Error message if failed")
+    ai_adaptations: Optional[str] = Field(None, description="Description of AI adaptations made")
+    
+    # Error handling fields (only for needs_user_intervention cases)
+    template_id: Optional[str] = Field(None, description="Template ID for user intervention")
+    execution_error: Optional[str] = Field(None, description="Raw execution error")
+    error_analysis: Optional[Dict[str, Any]] = Field(None, description="Detailed error analysis")
+    available_options: Optional[List[Dict[str, str]]] = Field(None, description="Available user options")
+    file_schemas: Optional[List[Dict[str, Any]]] = Field(None, description="File schema information")
 
 
 # Use Case CRUD Routes
@@ -442,7 +459,7 @@ async def smart_execute_template(request: SmartExecutionRequest):
             parameters=request.parameters
         )
         
-        logger.info(f"Smart execution result: {result['status']}")
+        logger.info(f"Smart execution result: {'success' if result.get('success') else 'failed'}")
         return SmartExecutionResponse(**result)
         
     except Exception as e:
@@ -463,12 +480,33 @@ async def execute_with_user_mapping(request: ColumnMappingRequest):
             parameters=request.parameters
         )
         
-        logger.info(f"Mapped execution result: {result['status']}")
+        logger.info(f"Mapped execution result: {'success' if result.get('success') else 'failed'}")
         return SmartExecutionResponse(**result)
         
     except Exception as e:
         logger.error(f"Error in mapped template execution: {e}")
         raise HTTPException(status_code=500, detail=f"Mapped execution failed: {str(e)}")
+
+
+@router.post("/execute/ai-assisted", response_model=SmartExecutionResponse)
+async def ai_assisted_execution(request: SmartExecutionRequest):
+    """Execute template with AI assistance - only called with user consent"""
+    try:
+        logger.info(f"AI-assisted execution request for template {request.template_id} (user consented)")
+        
+        # This will use AI to adapt the query to the user's data
+        result = smart_template_execution_service.execute_with_ai_assistance(
+            template_id=request.template_id,
+            files=request.files,
+            parameters=request.parameters
+        )
+        
+        logger.info(f"AI-assisted execution result: {'success' if result.get('success') else 'failed'}")
+        return SmartExecutionResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Error in AI-assisted template execution: {e}")
+        raise HTTPException(status_code=500, detail=f"AI-assisted execution failed: {str(e)}")
 
 
 @router.get("/health/check")
@@ -518,7 +556,7 @@ class TemplateSuggestionRequest(BaseModel):
 
 class TemplateApplicationRequest(BaseModel):
     """Request model for applying a template"""
-    template_id: str = Field(..., description="Template ID to apply")
+    use_case_id: str = Field(..., description="Use case ID to apply")
     files: List[Dict[str, Any]] = Field(..., description="User's file data")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="Template parameters")
 
@@ -584,7 +622,7 @@ async def apply_template(request: TemplateApplicationRequest):
         }
         
         result = template_application_service.apply_template(
-            template_id=request.template_id,
+            template_id=request.use_case_id,
             user_data=user_data,
             user_params=request.parameters
         )

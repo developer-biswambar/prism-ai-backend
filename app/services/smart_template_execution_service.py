@@ -61,7 +61,7 @@ class SmartTemplateExecutionService:
     def execute_template(self, template_id: str, files: List[Dict[str, Any]], 
                         parameters: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        Execute a template with smart fallback strategies
+        Execute a template with EXACT execution only - no automatic AI fallback
         
         Args:
             template_id: ID of the template to execute
@@ -69,7 +69,7 @@ class SmartTemplateExecutionService:
             parameters: Runtime parameters for the template
             
         Returns:
-            Execution result with status and data
+            Execution result with status and detailed error information
         """
         try:
             # Load template
@@ -79,56 +79,106 @@ class SmartTemplateExecutionService:
             
             # Extract template metadata
             template_config = template.get('template_config', {})
-            column_mapping = template_config.get('column_mapping', {})
-            primary_sql =  template['template_metadata']['processing_context']['generated_sql']
-            fallback_strategy = template_config.get('fallback_strategy', 'fuzzy_match')
             
-            # Get file schemas
+            # Get file schemas for analysis
             file_schemas = self._extract_file_schemas(files)
             
-            # Strategy 1: Try exact execution
+            # ONLY try exact execution - no automatic fallback
             logger.info(f"Attempting exact execution for template {template_id}")
             exact_result = self._try_exact_execution(template, files, parameters)
-            if exact_result['success']:
+            
+            if exact_result.get('success') or exact_result.get('status') == 'success':
                 logger.info("Exact execution succeeded")
-                return exact_result
-            
-            logger.info("Exact execution failed, trying column mapping")
-            
-            # Strategy 2: Try with column mapping
-            mapping_result = self._analyze_column_mapping(column_mapping, file_schemas)
-            
-            if mapping_result.status == 'success':
-                # Apply mapping and try execution
-                mapped_result = self._execute_with_mapping(template, files, parameters, mapping_result.mapped_columns)
-                if mapped_result['status'] == 'success':
-                    # Update template with successful mapping
-                    self._update_template_mapping(template_id, mapping_result.mapped_columns)
-                    logger.info("Execution with column mapping succeeded")
-                    return mapped_result
-            
-            # Strategy 3: Return mapping suggestions for user intervention
-            if mapping_result.status == 'needs_mapping':
-                logger.info("Template needs user intervention for column mapping")
+                
+                # Generate process ID if not already present
+                process_id = exact_result.get('process_id')
+                if not process_id:
+                    from app.utils.uuid_generator import generate_uuid
+                    process_id = generate_uuid('use_case')
+                
+                result_data = exact_result.get('data', exact_result.get('results', []))
+                
+                # Store results using the miscellaneous service storage method
+                if result_data:
+                    storage_data = {
+                        'data': result_data,
+                        'generated_sql': exact_result.get('generated_sql'),
+                        'row_count': exact_result.get('row_count', len(result_data) if isinstance(result_data, list) else 0),
+                        'processing_info': {
+                            'template_name': template.get('name', 'Unknown'),
+                            'execution_method': 'exact',
+                            'template_id': template_id
+                        }
+                    }
+                    self.misc_service.store_results(process_id, storage_data)
+                
+                # Return in the same format as /api/miscellaneous/process/
                 return {
-                    'status': 'needs_mapping',
-                    'template_id': template_id,
-                    'suggestions': mapping_result.suggestions,
-                    'error': 'Column mapping required - some columns could not be automatically matched'
+                    'success': True,
+                    'message': f"Successfully executed use case: {template.get('name', 'Unknown')}",
+                    'process_id': process_id,
+                    'generated_sql': exact_result.get('generated_sql'),
+                    'row_count': exact_result.get('row_count'),
+                    'processing_time_seconds': exact_result.get('processing_time_seconds', 0),
+                    'errors': exact_result.get('errors', []),
+                    'warnings': exact_result.get('warnings', []),
+                    'data': result_data,
+                    'execution_method': 'exact'
                 }
             
-            # All strategies failed
-            logger.error(f"All execution strategies failed for template {template_id}")
+            logger.info("Exact execution failed - analyzing error and providing suggestions")
+            
+            # Analyze the failure and provide detailed suggestions
+            error_analysis = self._analyze_execution_error(exact_result.get('error', ''), file_schemas, template)
+            
             return {
-                'status': 'failed',
-                'error': f"Template execution failed: {exact_result.get('error', 'Unknown error')}"
+                # Required fields for SmartExecutionResponse
+                'success': False,
+                'message': f"Use case execution requires user intervention: {error_analysis.get('user_hint', 'Column mismatch detected')}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [exact_result.get('error', 'Unknown error')],
+                'warnings': [],
+                'data': None,
+                
+                # Error-specific fields for user intervention
+                'template_id': template_id,
+                'execution_error': exact_result.get('error', 'Unknown error'),
+                'error_analysis': error_analysis,
+                'available_options': [
+                    {
+                        'option': 'ai_assisted',
+                        'label': 'Try with AI Assistance',
+                        'description': 'Let AI analyze your data and adapt the query automatically'
+                    },
+                    {
+                        'option': 'column_mapping', 
+                        'label': 'Manual Column Mapping',
+                        'description': 'Map your file columns to the expected columns manually'
+                    },
+                    {
+                        'option': 'cancel',
+                        'label': 'Cancel',
+                        'description': 'Stop execution and return to use case selection'
+                    }
+                ],
+                'file_schemas': file_schemas
             }
             
         except Exception as e:
             logger.error(f"Error executing template {template_id}: {e}")
             return {
-                'status': 'failed',
-                'error': str(e)
+                'success': False,
+                'message': f"Execution failed: {str(e)}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [str(e)],
+                'warnings': [],
+                'data': None
             }
     
     def _try_exact_execution(self, template: Dict[str, Any], files: List[Dict[str, Any]], 
@@ -168,8 +218,15 @@ class SmartTemplateExecutionService:
                 
         except Exception as e:
             return {
-                'status': 'failed',
-                'error': str(e)
+                'success': False,
+                'message': f"Execution failed: {str(e)}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [str(e)],
+                'warnings': [],
+                'data': None
             }
     
     def _extract_file_schemas(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -273,6 +330,200 @@ class SmartTemplateExecutionService:
         matches.sort(key=lambda x: x['similarity'], reverse=True)
         return matches
     
+    def _analyze_execution_error(self, error_message: str, file_schemas: List[Dict[str, Any]], 
+                                template: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze the execution error and provide helpful suggestions
+        """
+        analysis = {
+            'error_type': 'unknown',
+            'missing_columns': [],
+            'available_columns': [],
+            'suggestions': [],
+            'user_hint': ''
+        }
+        
+        try:
+            # Get all available columns from user files
+            all_available_columns = []
+            for schema in file_schemas:
+                all_available_columns.extend(schema.get('columns', []))
+            all_available_columns = list(set(all_available_columns))
+            analysis['available_columns'] = all_available_columns
+            
+            # Parse SQL binder errors to find missing columns
+            if 'Binder Error' in error_message and 'Referenced column' in error_message:
+                analysis['error_type'] = 'missing_column'
+                
+                # Extract missing column name from error
+                import re
+                column_match = re.search(r'Referenced column "([^"]+)" not found', error_message)
+                if column_match:
+                    missing_column = column_match.group(1)
+                    analysis['missing_columns'] = [missing_column]
+                    
+                    # Find similar columns using fuzzy matching
+                    similar_columns = self._fuzzy_match_columns(missing_column, all_available_columns, threshold=0.4)
+                    
+                    if similar_columns:
+                        analysis['suggestions'] = [
+                            f"Did you mean '{col['column']}'? (similarity: {col['similarity']:.1%})" 
+                            for col in similar_columns[:3]
+                        ]
+                        analysis['user_hint'] = f"The template expects a column named '{missing_column}', but your file has similar columns like: {', '.join([col['column'] for col in similar_columns[:3]])}"
+                    else:
+                        analysis['user_hint'] = f"The template expects a column named '{missing_column}', but it's not found in your data. Your file has columns: {', '.join(all_available_columns[:5])}"
+                
+                # Extract candidate bindings (available columns from error message)
+                candidates_match = re.search(r'Candidate bindings: ([^\\n]+)', error_message)
+                if candidates_match:
+                    candidates_text = candidates_match.group(1)
+                    # Parse out column names from "file_1.column_name" format
+                    candidate_columns = re.findall(r'"[^"]*\.([^"]+)"', candidates_text)
+                    if candidate_columns:
+                        analysis['available_columns'] = candidate_columns
+            
+            elif 'Missing required columns' in error_message:
+                analysis['error_type'] = 'missing_required_columns'
+                
+                # Extract missing columns list
+                columns_match = re.search(r'Missing required columns: \[(.*?)\]', error_message)
+                if columns_match:
+                    columns_text = columns_match.group(1)
+                    missing_columns = [col.strip().strip("'\"") for col in columns_text.split(',')]
+                    analysis['missing_columns'] = missing_columns
+                    
+                    analysis['user_hint'] = f"Your template requires these columns: {', '.join(missing_columns)}, but they're missing from your data. Available columns: {', '.join(all_available_columns[:5])}"
+                    
+                    # Find suggestions for each missing column
+                    suggestions = []
+                    for missing_col in missing_columns:
+                        similar = self._fuzzy_match_columns(missing_col, all_available_columns, threshold=0.4)
+                        if similar:
+                            suggestions.append(f"For '{missing_col}', try '{similar[0]['column']}' (similarity: {similar[0]['similarity']:.1%})")
+                    
+                    analysis['suggestions'] = suggestions
+            
+            else:
+                analysis['error_type'] = 'general_sql_error'
+                analysis['user_hint'] = "There was an SQL execution error. This might be due to data format issues or incompatible column types."
+                analysis['suggestions'] = [
+                    "Check if your data format matches what the template expects",
+                    "Verify that column names and data types are compatible",
+                    "Try using AI assistance to automatically adapt the query to your data"
+                ]
+            
+        except Exception as e:
+            logger.error(f"Error analyzing execution error: {e}")
+            analysis['user_hint'] = "Unable to analyze the error automatically. Try using AI assistance or manual column mapping."
+        
+        return analysis
+    
+    def execute_with_ai_assistance(self, template_id: str, files: List[Dict[str, Any]], 
+                                  parameters: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Execute template with AI assistance - only called with explicit user consent
+        """
+        try:
+            logger.info(f"Starting AI-assisted execution for template {template_id}")
+            
+            # Load template
+            template = dynamodb_templates_service.get_template(template_id)
+            if not template:
+                raise SmartTemplateExecutionError(f"Template {template_id} not found")
+            
+            # Get template content
+            template_content = template.get('template_content', template.get('description', ''))
+            if not template_content:
+                return {
+                    'status': 'failed',
+                    'error': 'No executable content in template for AI assistance'
+                }
+            
+            # Retrieve actual file data
+            retrieved_files = []
+            for i, file_info in enumerate(files):
+                file_data = self._get_file_data_by_id(file_info['file_id'])
+                file_data['role'] = f'file_{i}'
+                file_data['label'] = file_info.get('filename', f'File {i+1}')
+                retrieved_files.append(file_data)
+            
+            # Execute using AI with natural language processing
+            logger.info("Executing with AI assistance - adapting query to user data")
+            result = self.misc_service.process_core_request(
+                user_prompt=f"ADAPT THE FOLLOWING TEMPLATE TO THE USER'S DATA:\n\n{template_content}\n\nPlease analyze the user's file structure and adapt this template accordingly. Be flexible with column names and data formats.",
+                files_data=retrieved_files,
+                output_format='json'
+            )
+            
+            if result.get('success'):
+                logger.info("AI-assisted execution succeeded")
+                
+                # Generate process ID if not already present
+                process_id = result.get('process_id')
+                if not process_id:
+                    from app.utils.uuid_generator import generate_uuid
+                    process_id = generate_uuid('use_case')
+                
+                result_data = result.get('data', result.get('results', []))
+                
+                # Store results using the miscellaneous service storage method
+                if result_data:
+                    storage_data = {
+                        'data': result_data,
+                        'generated_sql': result.get('generated_sql'),
+                        'row_count': result.get('row_count', len(result_data) if isinstance(result_data, list) else 0),
+                        'processing_info': {
+                            'template_name': template.get('name', 'Unknown'),
+                            'execution_method': 'ai_assisted',
+                            'template_id': template_id,
+                            'ai_adaptations': 'AI adapted the template to work with your specific data structure'
+                        }
+                    }
+                    self.misc_service.store_results(process_id, storage_data)
+                
+                # Return in the same format as /api/miscellaneous/process/
+                return {
+                    'success': True,
+                    'message': f"Successfully executed use case with AI assistance: {template.get('name', 'Unknown')}",
+                    'process_id': process_id,
+                    'generated_sql': result.get('generated_sql'),
+                    'row_count': result.get('row_count'),
+                    'processing_time_seconds': result.get('processing_time_seconds', 0),
+                    'errors': result.get('errors', []),
+                    'warnings': result.get('warnings', []),
+                    'data': result_data,
+                    'execution_method': 'ai_assisted',
+                    'ai_adaptations': 'AI adapted the template to work with your specific data structure'
+                }
+            else:
+                logger.error("AI-assisted execution failed")
+                return {
+                    'success': False,
+                    'message': f"AI-assisted execution failed: {result.get('error', 'Unknown error')}",
+                    'process_id': None,
+                    'generated_sql': None,
+                    'row_count': 0,
+                    'processing_time_seconds': 0.0,
+                    'errors': [result.get('error', 'AI-assisted execution failed')],
+                    'warnings': [],
+                    'data': None
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in AI-assisted execution: {e}")
+            return {
+                'success': False,
+                'message': f"Execution failed: {str(e)}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [str(e)],
+                'warnings': [],
+                'data': None
+            }
+    
     def _suggest_column_mappings(self, current_columns: List[str]) -> Dict[str, List[str]]:
         """Suggest initial column mappings based on common patterns"""
         suggestions = {}
@@ -327,10 +578,40 @@ class SmartTemplateExecutionService:
             )
             
             if result.get('success'):
+                # Generate process ID if not already present
+                process_id = result.get('process_id')
+                if not process_id:
+                    from app.utils.uuid_generator import generate_uuid
+                    process_id = generate_uuid('use_case')
+                
+                result_data = result.get('data', result.get('results', []))
+                
+                # Store results using the miscellaneous service storage method
+                if result_data:
+                    storage_data = {
+                        'data': result_data,
+                        'generated_sql': result.get('generated_sql'),
+                        'row_count': result.get('row_count', len(result_data) if isinstance(result_data, list) else 0),
+                        'processing_info': {
+                            'template_name': template.get('name', 'Unknown'),
+                            'execution_method': 'mapped',
+                            'template_id': template.get('id', 'Unknown'),
+                            'applied_mapping': column_mapping
+                        }
+                    }
+                    self.misc_service.store_results(process_id, storage_data)
+                
+                # Return in the same format as /api/miscellaneous/process/
                 return {
-                    'status': 'success',
-                    'data': result.get('results'),
-                    'process_id': result.get('process_id'),
+                    'success': True,
+                    'message': f"Successfully executed use case with column mapping: {template.get('name', 'Unknown')}",
+                    'process_id': process_id,
+                    'generated_sql': result.get('generated_sql'),
+                    'row_count': result.get('row_count'),
+                    'processing_time_seconds': result.get('processing_time_seconds', 0),
+                    'errors': result.get('errors', []),
+                    'warnings': result.get('warnings', []),
+                    'data': result_data,
                     'execution_method': 'mapped',
                     'applied_mapping': column_mapping
                 }
@@ -342,8 +623,15 @@ class SmartTemplateExecutionService:
                 
         except Exception as e:
             return {
-                'status': 'failed',
-                'error': str(e)
+                'success': False,
+                'message': f"Execution failed: {str(e)}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [str(e)],
+                'warnings': [],
+                'data': None
             }
     
     def _apply_column_mapping_to_content(self, content: str, mapping: Dict[str, str]) -> str:
@@ -408,7 +696,7 @@ class SmartTemplateExecutionService:
             # Execute with user mapping
             result = self._execute_with_mapping(template, files, parameters, user_mapping)
             
-            if result['status'] == 'success':
+            if result.get('success') == True:
                 # Update template with successful mapping
                 self._update_template_mapping(template_id, user_mapping)
                 
@@ -417,8 +705,15 @@ class SmartTemplateExecutionService:
         except Exception as e:
             logger.error(f"Error applying user column mapping: {e}")
             return {
-                'status': 'failed',
-                'error': str(e)
+                'success': False,
+                'message': f"Execution failed: {str(e)}",
+                'process_id': None,
+                'generated_sql': None,
+                'row_count': 0,
+                'processing_time_seconds': 0.0,
+                'errors': [str(e)],
+                'warnings': [],
+                'data': None
             }
 
 
