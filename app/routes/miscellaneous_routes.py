@@ -108,7 +108,7 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
         logger.info(f"Processing {len(retrieved_files)} files with prompt: {request.user_prompt[:100]}...")
         
         # Process using the miscellaneous processor
-        result = processor.process_natural_language_query(
+        result = processor.process_core_request(
             user_prompt=request.user_prompt,
             files_data=retrieved_files,
             output_format=request.output_format

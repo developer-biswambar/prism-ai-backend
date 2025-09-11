@@ -85,31 +85,58 @@ class S3StorageService:
     
     def _test_connection(self):
         """Test S3 connection and bucket access"""
+        use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
+        
         try:
             self.s3_client.head_bucket(Bucket=self.bucket_name)
+            logger.info(f"S3 bucket '{self.bucket_name}' exists and is accessible")
         except ClientError as e:
             error_code = e.response['Error']['Code']
             if error_code == '404':
                 # For local development, try to create the bucket
-                use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
                 if use_local_s3:
                     try:
-                        logger.info(f"Creating local S3 bucket: {self.bucket_name}")
-                        self.s3_client.create_bucket(Bucket=self.bucket_name)
+                        logger.info(f"Bucket '{self.bucket_name}' not found. Creating local S3 bucket...")
+                        
+                        # Create bucket with proper configuration for LocalStack
+                        create_bucket_config = {}
+                        if self.region and self.region != 'us-east-1':
+                            create_bucket_config['CreateBucketConfiguration'] = {
+                                'LocationConstraint': self.region
+                            }
+                        
+                        if create_bucket_config:
+                            self.s3_client.create_bucket(
+                                Bucket=self.bucket_name, 
+                                **create_bucket_config
+                            )
+                        else:
+                            self.s3_client.create_bucket(Bucket=self.bucket_name)
+                        
                         logger.info(f"Local S3 bucket '{self.bucket_name}' created successfully")
+                        
+                        # Verify bucket was created
+                        self.s3_client.head_bucket(Bucket=self.bucket_name)
+                        logger.info(f"Verified bucket '{self.bucket_name}' is accessible")
                         return
+                        
                     except Exception as create_error:
-                        logger.error(f"Failed to create local S3 bucket: {create_error}")
-                raise RuntimeError(f"S3 bucket '{self.bucket_name}' not found")
+                        logger.error(f"Failed to create local S3 bucket '{self.bucket_name}': {create_error}")
+                        logger.error(f"Error type: {type(create_error).__name__}")
+                        raise RuntimeError(f"Failed to create local S3 bucket: {create_error}")
+                else:
+                    raise RuntimeError(f"S3 bucket '{self.bucket_name}' not found")
             elif error_code == '403':
                 raise RuntimeError(f"Access denied to S3 bucket '{self.bucket_name}'")
             else:
+                logger.error(f"S3 bucket access error: {error_code} - {e}")
                 raise RuntimeError(f"S3 bucket access error: {e}")
         except Exception as e:
             # Handle connection errors for local development
-            use_local_s3 = os.getenv('USE_LOCAL_S3', 'false').lower() == 'true'
             if use_local_s3:
                 local_endpoint = os.getenv('LOCAL_S3_ENDPOINT', 'http://localhost:4566')
+                logger.error(f"Cannot connect to local S3 endpoint '{local_endpoint}': {e}")
+                logger.info("Make sure LocalStack is running with: docker run --rm -d -p 4566:4566 localstack/localstack")
                 raise RuntimeError(f"Cannot connect to local S3 endpoint '{local_endpoint}'. "
                                  f"Make sure LocalStack is running: docker run --rm -d -p 4566:4566 localstack/localstack")
             else:

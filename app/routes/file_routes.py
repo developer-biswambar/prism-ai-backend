@@ -1150,7 +1150,13 @@ async def delete_file(file_id: str):
         raise HTTPException(404, "File not found")
         
     file_data = uploaded_files.get(file_id)
-    file_info = file_data["info"]
+    if file_data is None:
+        raise HTTPException(404, "File data not found")
+        
+    file_info = file_data.get("info")
+    if file_info is None:
+        # Fallback for files without proper info structure
+        file_info = {"filename": file_id, "total_rows": 0}
     
     # Delete the file
     success = uploaded_files.delete(file_id)

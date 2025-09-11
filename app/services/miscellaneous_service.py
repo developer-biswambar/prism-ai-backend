@@ -705,11 +705,13 @@ class MiscellaneousProcessor:
         self.storage = _shared_storage  # Use shared storage
         self.ai_generator = AIQueryGenerator()
         
-    def process_natural_language_query(
+    def process_core_request(
         self, 
         user_prompt: str, 
         files_data: List[Dict[str, Any]], 
-        output_format: str = "json"
+        output_format: str = "json",
+        execute_exact_sql: bool = False,
+        exact_sql_query: str = None,
     ) -> Dict[str, Any]:
         """
         Process natural language query against multiple files
@@ -767,30 +769,39 @@ class MiscellaneousProcessor:
                             raise
                 
                 logger.info(f"Parallel file processing completed for {len(files_data)} files")
-                
-                # Pre-process user prompt to provide column hints
-                enhanced_prompt = self._enhance_user_prompt_with_column_hints(user_prompt, table_schemas)
-                logger.info(f"Enhanced prompt: {enhanced_prompt}")
+
                 
                 # Generate SQL from natural language
-                sql_result = self.ai_generator.generate_sql_from_prompt(
-                    user_prompt=enhanced_prompt,
-                    table_schemas=table_schemas,
-                    sample_data=sample_data
-                )
+                sql_result = {}
+
+                if execute_exact_sql:
+                    # Directly execute the sql instead of generating from AI
+                    sql_result['sql_query']= exact_sql_query
+                else:
+                    # Pre-process user prompt to provide column hints
+                    enhanced_prompt = self._enhance_user_prompt_with_column_hints(user_prompt, table_schemas)
+                    logger.info(f"Enhanced prompt: {enhanced_prompt}")
+
+                    sql_result = self.ai_generator.generate_sql_from_prompt(
+                        user_prompt=enhanced_prompt,
+                        table_schemas=table_schemas,
+                        sample_data=sample_data
+                    )
+                    if not sql_result['success']:
+                        return {
+                            "status": "error",
+                            'success': False,
+                            'error': f"Failed to generate SQL: {sql_result.get('error', 'Unknown error')}",
+                            'generated_sql': None,
+                            'data': [],
+                            'warnings': ["Could not generate SQL from natural language prompt"],
+                            'errors': [sql_result.get('error', 'Unknown error')],
+                            # Store source data and schemas even on failure for execute query functionality
+                            'files_data': files_data,  # Original dataframes and metadata
+                            'table_schemas': table_schemas  # Table schemas for validation
+                        }
                 
-                if not sql_result['success']:
-                    return {
-                        'success': False,
-                        'error': f"Failed to generate SQL: {sql_result.get('error', 'Unknown error')}",
-                        'generated_sql': None,
-                        'data': [],
-                        'warnings': ["Could not generate SQL from natural language prompt"],
-                        'errors': [sql_result.get('error', 'Unknown error')],
-                        # Store source data and schemas even on failure for execute query functionality
-                        'files_data': files_data,  # Original dataframes and metadata
-                        'table_schemas': table_schemas  # Table schemas for validation
-                    }
+
                 
                 generated_sql = sql_result['sql_query']
                 
@@ -830,6 +841,7 @@ class MiscellaneousProcessor:
                     
                     return {
                         'success': True,
+                        "status": "success",
                         'generated_sql': generated_sql,
                         'data': result_data,  # Preview data for UI
                         'full_data': result_df.to_dict('records') if output_format.lower() == "json" else result_df,  # Full data for storage

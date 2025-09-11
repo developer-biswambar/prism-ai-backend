@@ -1,6 +1,6 @@
 """
-Template Management API Routes
-Provides REST endpoints for template CRUD operations, search, and analytics.
+Use Case Management API Routes
+Provides REST endpoints for use case CRUD operations, search, and analytics.
 """
 
 import uuid
@@ -12,16 +12,28 @@ from pydantic import BaseModel, Field, validator
 
 from app.services.dynamodb_templates_service import dynamodb_templates_service
 from app.services.template_application_service import template_application_service
+from app.services.smart_template_execution_service import smart_template_execution_service
 import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/saved-templates", tags=["Saved Templates"])
+router = APIRouter(prefix="/saved-use-cases", tags=["Saved Use Cases"])
+
+
+def _map_template_to_use_case_response(template_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Helper function to map template data to UseCaseResponse format"""
+    return {
+        **template_data,
+        'use_case_type': template_data.get('template_type', 'data_processing'),
+        'use_case_config': template_data.get('template_config', {}),
+        'use_case_content': template_data.get('template_content'),
+        'use_case_metadata': template_data.get('template_metadata')
+    }
 
 
 # Request/Response Models
-class TemplateConfigModel(BaseModel):
-    """Template configuration schema"""
+class UseCaseConfigModel(BaseModel):
+    """Use case configuration schema"""
     prompt_template: str = Field(..., description="Parameterized natural language prompt")
     required_columns: List[str] = Field(default_factory=list, description="Required column mappings")
     optional_columns: List[str] = Field(default_factory=list, description="Optional column mappings") 
@@ -31,47 +43,46 @@ class TemplateConfigModel(BaseModel):
     sample_data: Dict[str, Any] = Field(default_factory=dict, description="Example input/output data")
 
 
-class CreateTemplateRequest(BaseModel):
-    """Request model for creating a new template"""
-    name: str = Field(..., min_length=1, max_length=200, description="Template display name")
+class CreateUseCaseRequest(BaseModel):
+    """Request model for creating a new use case"""
+    name: str = Field(..., min_length=1, max_length=200, description="Use case display name")
     description: str = Field(..., min_length=1, max_length=1000, description="Detailed description")
-    template_type: str = Field(..., description="Template type")
-    category: str = Field(..., description="Template category")
-    tags: List[str] = Field(default_factory=list, description="Template tags")
-    template_config: TemplateConfigModel = Field(..., description="Template configuration")
-    is_public: bool = Field(default=False, description="Whether template is publicly shared")
+    use_case_type: str = Field(..., description="Use case type")
+    category: str = Field(..., description="Use case category")
+    tags: List[str] = Field(default_factory=list, description="Use case tags")
+    use_case_config: UseCaseConfigModel = Field(..., description="Use case configuration")
     created_by: Optional[str] = Field(None, description="Creator user identifier")
     
-    @validator('template_type')
-    def validate_template_type(cls, v):
+    @validator('use_case_type')
+    def validate_use_case_type(cls, v):
         valid_types = ['data_processing', 'reconciliation', 'analysis', 'transformation', 'reporting']
         if v not in valid_types:
-            raise ValueError(f'template_type must be one of: {valid_types}')
+            raise ValueError(f'use_case_type must be one of: {valid_types}')
         return v
 
 
-class UpdateTemplateRequest(BaseModel):
-    """Request model for updating an existing template"""
+class UpdateUseCaseRequest(BaseModel):
+    """Request model for updating an existing use case"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, min_length=1, max_length=1000)
     category: Optional[str] = Field(None)
     industry: Optional[str] = Field(None)
     tags: Optional[List[str]] = Field(None)
-    template_config: Optional[TemplateConfigModel] = Field(None)
-    is_public: Optional[bool] = Field(None)
+    use_case_config: Optional[UseCaseConfigModel] = Field(None)
+    use_case_content: Optional[str] = Field(None, description="Rich use case content")
+    use_case_metadata: Optional[Dict[str, Any]] = Field(None, description="Enhanced use case metadata")
 
 
-class TemplateResponse(BaseModel):
-    """Response model for template data with enhanced fields"""
+class UseCaseResponse(BaseModel):
+    """Response model for use case data with enhanced fields"""
     id: str
     name: str
     description: str
-    template_type: str
+    use_case_type: str
     category: str
     tags: List[str]
-    template_config: Dict[str, Any]
+    use_case_config: Dict[str, Any]
     version: str
-    is_public: bool
     created_by: Optional[str]
     created_at: str
     updated_at: str
@@ -80,28 +91,55 @@ class TemplateResponse(BaseModel):
     rating: float
     rating_count: int
     
-    # Enhanced template fields
-    template_content: Optional[str] = None
-    template_metadata: Optional[Dict[str, Any]] = None
+    # Enhanced use case fields
+    use_case_content: Optional[str] = None
+    use_case_metadata: Optional[Dict[str, Any]] = None
 
 
-class TemplateListResponse(BaseModel):
-    """Response model for template list"""
-    templates: List[TemplateResponse]
+class UseCaseListResponse(BaseModel):
+    """Response model for use case list"""
+    use_cases: List[UseCaseResponse]
     total_count: int
     offset: int
     limit: int
 
 
-class RateTemplateRequest(BaseModel):
-    """Request model for rating a template"""
+class RateUseCaseRequest(BaseModel):
+    """Request model for rating a use case"""
     rating: float = Field(..., ge=1.0, le=5.0, description="Rating from 1.0 to 5.0")
 
 
-# Template CRUD Routes
+# Smart Execution Models
+class SmartExecutionRequest(BaseModel):
+    """Request model for smart template execution"""
+    template_id: str = Field(..., description="Template ID to execute")
+    files: List[Dict[str, Any]] = Field(..., description="Files to process")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Runtime parameters")
 
-@router.post("/", response_model=TemplateResponse, status_code=201)
-async def create_template(request: CreateTemplateRequest):
+
+class ColumnMappingRequest(BaseModel):
+    """Request model for applying user column mapping"""
+    template_id: str = Field(..., description="Template ID")
+    column_mapping: Dict[str, str] = Field(..., description="User-provided column mapping")
+    files: List[Dict[str, Any]] = Field(..., description="Files to process")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Runtime parameters")
+
+
+class SmartExecutionResponse(BaseModel):
+    """Response model for smart execution results"""
+    status: str = Field(..., description="Execution status: success, needs_mapping, failed")
+    data: Optional[Any] = Field(None, description="Execution results if successful")
+    process_id: Optional[str] = Field(None, description="Process ID for result retrieval")
+    execution_method: Optional[str] = Field(None, description="Method used: exact, mapped")
+    applied_mapping: Optional[Dict[str, str]] = Field(None, description="Applied column mapping")
+    suggestions: Optional[Dict[str, List[str]]] = Field(None, description="Column mapping suggestions")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+
+# Use Case CRUD Routes
+
+@router.post("/", response_model=UseCaseResponse, status_code=201)
+async def create_template(request: CreateUseCaseRequest):
     """Create a new template"""
     try:
         # Generate unique template ID
@@ -116,8 +154,14 @@ async def create_template(request: CreateTemplateRequest):
             "category": request.category,
             "industry": request.industry,
             "tags": request.tags,
-            "template_config": request.template_config.dict(),
-            "is_public": request.is_public,
+            "template_config": {
+                **request.template_config.dict(),
+                # Smart execution configuration
+                "column_mapping": {},  # Will be populated as templates are used
+                "fallback_strategy": "fuzzy_match",
+                "primary_sql": None,  # Will be set when template generates SQL
+                "last_mapping_update": None
+            },
             "created_by": request.created_by,
             "version": "1.0",
             "usage_count": 0,
@@ -131,14 +175,14 @@ async def create_template(request: CreateTemplateRequest):
             raise HTTPException(status_code=500, detail="Failed to save template")
         
         logger.info(f"Created template {template_id}: {request.name}")
-        return TemplateResponse(**template_data)
+        return UseCaseResponse(**_map_template_to_use_case_response(template_data))
         
     except Exception as e:
         logger.error(f"Error creating template: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create template: {str(e)}")
 
 
-@router.get("/{template_id}", response_model=TemplateResponse)
+@router.get("/{template_id}", response_model=UseCaseResponse)
 async def get_template(
     template_id: str = Path(..., description="Template ID"),
     template_type: Optional[str] = Query(None, description="Template type for faster lookup")
@@ -149,7 +193,7 @@ async def get_template(
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
         
-        return TemplateResponse(**template)
+        return UseCaseResponse(**_map_template_to_use_case_response(template))
         
     except HTTPException:
         raise
@@ -158,10 +202,10 @@ async def get_template(
         raise HTTPException(status_code=500, detail=f"Failed to get template: {str(e)}")
 
 
-@router.put("/{template_id}", response_model=TemplateResponse)
+@router.put("/{template_id}", response_model=UseCaseResponse)
 async def update_template(
     template_id: str = Path(..., description="Template ID"),
-    request: UpdateTemplateRequest = Body(...),
+    request: UpdateUseCaseRequest = Body(...),
     template_type: Optional[str] = Query(None, description="Template type for faster lookup")
 ):
     """Update an existing template"""
@@ -180,8 +224,10 @@ async def update_template(
             updates['tags'] = request.tags
         if request.template_config is not None:
             updates['template_config'] = request.template_config.dict()
-        if request.is_public is not None:
-            updates['is_public'] = request.is_public
+        if request.template_content is not None:
+            updates['template_content'] = request.template_content
+        if request.template_metadata is not None:
+            updates['template_metadata'] = request.template_metadata
         
         if not updates:
             raise HTTPException(status_code=400, detail="No updates provided")
@@ -194,7 +240,7 @@ async def update_template(
         # Return updated template
         updated_template = dynamodb_templates_service.get_template(template_id, template_type)
         logger.info(f"Updated template {template_id}")
-        return TemplateResponse(**updated_template)
+        return UseCaseResponse(**_map_template_to_use_case_response(updated_template))
         
     except HTTPException:
         raise
@@ -225,11 +271,10 @@ async def delete_template(
 
 # Template Discovery Routes
 
-@router.get("/", response_model=TemplateListResponse)
+@router.get("/", response_model=UseCaseListResponse)
 async def list_templates(
     template_type: Optional[str] = Query(None, description="Filter by template type"),
     category: Optional[str] = Query(None, description="Filter by category"),
-    is_public: Optional[bool] = Query(None, description="Filter by public/private"),
     created_by: Optional[str] = Query(None, description="Filter by creator"),
     limit: int = Query(50, ge=1, le=200, description="Number of results to return"),
     offset: int = Query(0, ge=0, description="Number of results to skip")
@@ -239,16 +284,15 @@ async def list_templates(
         templates = dynamodb_templates_service.list_templates(
             template_type=template_type,
             category=category,
-            is_public=is_public,
             created_by=created_by,
             limit=limit,
             offset=offset
         )
         
-        template_responses = [TemplateResponse(**template) for template in templates]
+        template_responses = [UseCaseResponse(**_map_template_to_use_case_response(template)) for template in templates]
         
-        return TemplateListResponse(
-            templates=template_responses,
+        return UseCaseListResponse(
+            use_cases=template_responses,
             total_count=len(template_responses),  # Note: This is just the current page count
             offset=offset,
             limit=limit
@@ -259,7 +303,7 @@ async def list_templates(
         raise HTTPException(status_code=500, detail=f"Failed to list templates: {str(e)}")
 
 
-@router.get("/search/query", response_model=TemplateListResponse)
+@router.get("/search/query", response_model=UseCaseListResponse)
 async def search_templates(
     q: str = Query(..., min_length=1, description="Search query"),
     template_type: Optional[str] = Query(None, description="Filter by template type"),
@@ -275,10 +319,10 @@ async def search_templates(
             tags=tags
         )
         
-        template_responses = [TemplateResponse(**template) for template in templates]
+        template_responses = [UseCaseResponse(**_map_template_to_use_case_response(template)) for template in templates]
         
-        return TemplateListResponse(
-            templates=template_responses,
+        return UseCaseListResponse(
+            use_cases=template_responses,
             total_count=len(template_responses),
             offset=0,
             limit=len(template_responses)
@@ -289,7 +333,7 @@ async def search_templates(
         raise HTTPException(status_code=500, detail=f"Failed to search templates: {str(e)}")
 
 
-@router.get("/popular/list", response_model=TemplateListResponse)
+@router.get("/popular/list", response_model=UseCaseListResponse)
 async def get_popular_templates(
     limit: int = Query(10, ge=1, le=50, description="Number of popular templates to return"),
     template_type: Optional[str] = Query(None, description="Filter by template type")
@@ -301,10 +345,10 @@ async def get_popular_templates(
             template_type=template_type
         )
         
-        template_responses = [TemplateResponse(**template) for template in templates]
+        template_responses = [UseCaseResponse(**_map_template_to_use_case_response(template)) for template in templates]
         
-        return TemplateListResponse(
-            templates=template_responses,
+        return UseCaseListResponse(
+            use_cases=template_responses,
             total_count=len(template_responses),
             offset=0,
             limit=limit
@@ -340,7 +384,7 @@ async def mark_template_usage(
 @router.post("/{template_id}/rating", status_code=204)
 async def rate_template(
     template_id: str = Path(..., description="Template ID"),
-    request: RateTemplateRequest = Body(...),
+    request: RateUseCaseRequest = Body(...),
     template_type: Optional[str] = Query(None, description="Template type for faster lookup")
 ):
     """Rate a template (1-5 stars)"""
@@ -382,6 +426,49 @@ async def get_template_categories(
 async def get_template_types():
     """Get all available template types"""
     return ['data_processing', 'reconciliation', 'analysis', 'transformation', 'reporting']
+
+
+# Smart Execution Routes
+
+@router.post("/execute", response_model=SmartExecutionResponse)
+async def smart_execute_template(request: SmartExecutionRequest):
+    """Execute a template with smart fallback strategies"""
+    try:
+        logger.info(f"Smart execution request for template {request.template_id}")
+        
+        result = smart_template_execution_service.execute_template(
+            template_id=request.template_id,
+            files=request.files,
+            parameters=request.parameters
+        )
+        
+        logger.info(f"Smart execution result: {result['status']}")
+        return SmartExecutionResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Error in smart template execution: {e}")
+        raise HTTPException(status_code=500, detail=f"Smart execution failed: {str(e)}")
+
+
+@router.post("/execute/with-mapping", response_model=SmartExecutionResponse)
+async def execute_with_user_mapping(request: ColumnMappingRequest):
+    """Execute template with user-provided column mapping"""
+    try:
+        logger.info(f"Executing template {request.template_id} with user mapping")
+        
+        result = smart_template_execution_service.apply_user_column_mapping(
+            template_id=request.template_id,
+            user_mapping=request.column_mapping,
+            files=request.files,
+            parameters=request.parameters
+        )
+        
+        logger.info(f"Mapped execution result: {result['status']}")
+        return SmartExecutionResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Error in mapped template execution: {e}")
+        raise HTTPException(status_code=500, detail=f"Mapped execution failed: {str(e)}")
 
 
 @router.get("/health/check")
@@ -444,7 +531,6 @@ class CreateTemplateFromQueryRequest(BaseModel):
     template_type: str = Field(..., description="Template type")
     category: str = Field(..., description="Template category")
     tags: List[str] = Field(default_factory=list, description="Template tags")
-    is_public: bool = Field(default=False, description="Make template public")
     created_by: Optional[str] = Field(None, description="Creator identifier")
     
     # Enhanced template data
@@ -452,7 +538,7 @@ class CreateTemplateFromQueryRequest(BaseModel):
     template_metadata: Optional[Dict[str, Any]] = Field(None, description="Enhanced template metadata including file patterns, transformation patterns, etc.")
 
 
-@router.post("/suggest", response_model=TemplateListResponse)
+@router.post("/suggest", response_model=UseCaseListResponse)
 async def suggest_templates(request: TemplateSuggestionRequest):
     """Suggest templates based on user query and data structure"""
     try:
@@ -470,14 +556,14 @@ async def suggest_templates(request: TemplateSuggestionRequest):
             template_data.pop('match_score', None)  # Remove from main data
             template_data.pop('match_reasons', None)
             
-            template_resp = TemplateResponse(**template_data)
+            template_resp = UseCaseResponse(**_map_template_to_use_case_response(template_data))
             # Add suggestion metadata (these would need to be added to the model)
             # template_resp.match_score = suggestion.get('match_score', 0.0)
             # template_resp.match_reasons = suggestion.get('match_reasons', [])
             template_responses.append(template_resp)
         
-        return TemplateListResponse(
-            templates=template_responses,
+        return UseCaseListResponse(
+            use_cases=template_responses,
             total_count=len(template_responses),
             offset=0,
             limit=request.limit
@@ -518,7 +604,7 @@ async def apply_template(request: TemplateApplicationRequest):
         raise HTTPException(status_code=500, detail=f"Failed to apply template: {str(e)}")
 
 
-@router.post("/create-from-query", response_model=TemplateResponse, status_code=201)
+@router.post("/create-from-query", response_model=UseCaseResponse, status_code=201)
 async def create_template_from_query(request: CreateTemplateFromQueryRequest):
     """Create a new template from a successful query execution"""
     try:
@@ -547,7 +633,6 @@ async def create_template_from_query(request: CreateTemplateFromQueryRequest):
             'template_type': request.template_type,
             'category': request.category,
             'tags': request.tags,
-            'is_public': request.is_public,
             'created_by': request.created_by,
             'template_content': request.template_content,
             'template_metadata': request.template_metadata
@@ -564,7 +649,9 @@ async def create_template_from_query(request: CreateTemplateFromQueryRequest):
                 detail=f"Template creation failed: {result.get('error')}"
             )
         
-        return TemplateResponse(**result['template'])
+        # Map template fields to use case response format
+        use_case_data = _map_template_to_use_case_response(result['template'])
+        return UseCaseResponse(**use_case_data)
         
     except HTTPException:
         raise
