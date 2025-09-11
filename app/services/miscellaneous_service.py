@@ -341,8 +341,25 @@ WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
 - VARCHAR columns: Use REGEXP_EXTRACT(), LIKE, string functions
 - If you need regex on numeric data: REGEXP_EXTRACT(CAST(numeric_column AS VARCHAR), pattern)
 - Always check column data types in the schema before choosing operations
-- Complex queries with multiple CTEs, window functions, and advanced logic are ENCOURAGED
-- The key is proper column aliasing and scope management, NOT query simplification
+🚨 TOP SQL ERROR PREVENTION PRIORITIES:
+1. COLUMN EXISTENCE: Use only columns that exist in schema
+2. ALIAS CONSISTENCY: Don't mix columns from different table aliases  
+3. NULL HANDLING: Use NULLIF() to prevent division by zero
+4. TYPE SAFETY: Cast columns when needed for operations
+5. SIMPLE FIRST: Start with simple queries, add complexity only if needed
+
+🎯 PREFER SIMPLE QUERIES OVER COMPLEX CTEs:
+❌ AVOID: Multiple CTEs with complex joins (error-prone)
+✅ PREFER: Single CTE or simple subqueries when possible
+
+SIMPLE APPROACH EXAMPLE:
+SELECT *, 
+       CASE WHEN "Retail_Price" < 50 THEN 'low' 
+            WHEN "Retail_Price" BETWEEN 50 AND 200 THEN 'medium'
+            ELSE 'high' END as price_tier,
+       ("Retail_Price" - "Cost_Price") / NULLIF("Retail_Price", 0) as profit_margin
+FROM file_1
+WHERE "Retail_Price" > 0
 
 EXAMPLE - AMOUNT TOLERANCE MATCHING:
 ✅ CORRECT - Simple approach: 
@@ -406,6 +423,28 @@ DuckDB Advanced Features Available:
 - Array and JSON functions
 - Complex CASE statements and conditional logic
 - Temporary tables and views for multi-step processing
+
+🚨 CRITICAL CTE ALIAS CONSISTENCY RULES:
+❌ NEVER MIX ALIASES FROM DIFFERENT CTEs:
+WITH price_classification AS (SELECT *, 'low' as price_tier FROM file_1),
+     product_positioning AS (SELECT *, 'above_avg' as price_position FROM file_1)
+SELECT pp.price_tier, pp.price_position FROM price_classification pp  -- ERROR: price_position not in pp!
+
+✅ ALWAYS USE CORRECT ALIASES:
+WITH price_classification AS (SELECT *, 'low' as price_tier FROM file_1),
+     product_positioning AS (SELECT *, 'above_avg' as price_position FROM file_1)
+SELECT pp.price_tier, ppos.price_position 
+FROM price_classification pp
+JOIN product_positioning ppos ON pp."Product_Code" = ppos."Product_Code"
+
+🔍 CTE VALIDATION CHECKLIST (if using multiple CTEs):
+1. Each CTE alias must be unique (price_classification, product_positioning, business_priority)
+2. In final SELECT, use the correct alias for each column:
+   - Columns from price_classification: use 'pp' alias
+   - Columns from product_positioning: use 'ppos' alias  
+   - Columns from business_priority: use 'bp' alias
+3. Join CTEs explicitly - don't assume column availability across CTEs
+4. Test each CTE independently before combining
 
 🚨 CRITICAL CTE SYNTAX RULES:
 1. CTE syntax: WITH cte_name AS (SELECT ...) SELECT ... (NO COMMA before final SELECT)
@@ -865,9 +904,16 @@ class MiscellaneousProcessor:
                     
                 except Exception as e:
                     logger.error(f"Query execution failed: {e}")
+                    
+                    # Analyze the error with AI to provide better feedback
+                    error_analysis = self._analyze_sql_execution_error(
+                        str(e), generated_sql, table_schemas, files_data
+                    )
+                    
                     return {
                         'success': False,
                         'error': f"Query execution failed: {str(e)}",
+                        'error_analysis': error_analysis,  # AI-powered error analysis
                         'generated_sql': generated_sql,
                         'data': [],
                         'warnings': ["Query generated successfully but execution failed"],

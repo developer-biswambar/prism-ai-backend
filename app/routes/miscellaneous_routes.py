@@ -949,6 +949,18 @@ class PromptSuggestionsRequest(BaseModel):
     max_suggestions: Optional[int] = 4
 
 
+class SimpleFileReference(BaseModel):
+    """Simple file reference for prompt improvement"""
+    file_id: str
+    filename: str
+
+
+class PromptImprovementRequest(BaseModel):
+    """Request model for prompt improvement"""
+    user_prompt: str
+    files: List[SimpleFileReference]
+
+
 class IntentVerificationRequest(BaseModel):
     """Request model for intent verification"""
     user_prompt: str
@@ -1164,6 +1176,204 @@ def verify_query_intent(request: IntentVerificationRequest):
         raise HTTPException(status_code=500, detail=f"Intent verification failed: {str(e)}")
 
 
+@router.post("/improve-prompt")
+def improve_user_prompt(request: PromptImprovementRequest):
+    """Enhance user prompt with intent analysis and output column predictions"""
+    try:
+        from app.services.llm_service import get_llm_service, get_llm_generation_params, LLMMessage
+        from app.services.intent_service import QueryIntentExtractor
+        
+        llm_service = get_llm_service()
+        if not llm_service.is_available():
+            raise HTTPException(status_code=500, detail="LLM service not available")
+        
+        # Get file data from file IDs
+        file_data_list = []
+        files_context = []
+        
+        for i, file_ref in enumerate(request.files, 1):
+            try:
+                file_data = get_file_by_id(file_ref.file_id)
+                file_data_list.append(file_data)
+                
+                # Get actual dataframe for data sample analysis
+                df = file_data['dataframe']
+                
+                # Build file context for prompt with data samples
+                columns_preview = ', '.join(df.columns[:8])
+                if len(df.columns) > 8:
+                    columns_preview += f" (and {len(df.columns) - 8} more)"
+                
+                # Get sample data (first 3 rows for analysis)
+                sample_rows = []
+                if len(df) > 0:
+                    for idx in range(min(3, len(df))):
+                        row_data = []
+                        for col in df.columns[:6]:  # Limit to first 6 columns to keep context manageable
+                            value = df.iloc[idx][col]
+                            # Convert to string and limit length
+                            str_value = str(value) if value is not None else 'null'
+                            if len(str_value) > 30:
+                                str_value = str_value[:27] + '...'
+                            row_data.append(f"{col}: {str_value}")
+                        sample_rows.append("     " + " | ".join(row_data))
+                
+                sample_data = "\n".join(sample_rows) if sample_rows else "     No data available"
+                
+                files_context.append(f"""file_{i}: {file_data['filename']}
+   Rows: {len(df):,}
+   Columns: {columns_preview}
+   Sample Data:
+{sample_data}""")
+                
+            except Exception as e:
+                logger.error(f"Error preparing file {file_ref.file_id}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Could not analyze file {file_ref.file_id}: {str(e)}")
+        
+        if not file_data_list:
+            raise HTTPException(status_code=400, detail="No valid files provided")
+        
+        # First, extract intent using existing service
+        intent_extractor = QueryIntentExtractor()
+        intent_summary = intent_extractor.extract_intent(request.user_prompt, file_data_list)
+        
+        # Build enhanced prompt improvement request
+        files_description = "\n".join(files_context)
+        
+        prompt = f"""
+You are an expert data analyst who helps users write better, more precise natural language queries for data processing.
+
+TASK: Analyze the user's query and available data samples to improve the query by making it more specific, clear, and likely to generate accurate results.
+
+USER'S ORIGINAL QUERY: "{request.user_prompt}"
+
+INTENT ANALYSIS: {intent_summary.get('summary', 'General data processing')}
+
+AVAILABLE DATA WITH SAMPLES:
+{files_description}
+
+IMPROVEMENT GOALS:
+1. **Analyze actual data patterns** - Use the sample data to understand data types, formats, and values
+2. **Clarify ambiguous terms** - Make vague requests more specific based on actual column names and data
+3. **Suggest relevant columns** - Reference actual column names that appear in the data samples
+4. **Specify output format** - Clarify what results the user likely wants based on data patterns
+5. **Add data-aware context** - Include business logic informed by actual data values
+6. **Predict realistic output columns** - Suggest what the results will contain based on available data
+7. **Use correct table references** - ALWAYS refer to files as file_1, file_2, file_3, etc. (never use actual filenames as table names)
+
+DATA-AWARE IMPROVEMENT EXAMPLES:
+- Original: "Compare the files"
+- With data context: "Compare file_1 and file_2 by matching on customer_id column (seeing values like 'CUST001', 'CUST002'), show records that exist in file_1 but not in file_2, including customer_name, transaction_amount, and date columns"
+
+- Original: "Find top customers"  
+- With data context: "Find the top 10 customers by total purchase amount from the transaction_amount column (seeing currency values like '$1,234.56'), showing customer_name, total_spent, and number_of_orders, ordered by total_spent descending"
+
+- Original: "Clean the data"
+- With data context: "Clean customer data by standardizing phone numbers (seeing formats like '555-123-4567' and '(555) 123-4567'), validating email addresses, and formatting names to title case"
+
+IMPORTANT TABLE NAMING: 
+- Files are always referenced as file_1, file_2, file_3, etc. in SQL queries
+- NEVER use actual filenames like 'products_test.csv' or 'customers.xlsx' as table names
+- Example: "SELECT * FROM file_1 WHERE customer_id IN (SELECT customer_id FROM file_2)"
+
+Respond in VALID JSON format only. Do not include any text before or after the JSON. Ensure all strings are properly escaped:
+{{
+    "improved_prompt": "the enhanced, more specific version of the user's query",
+    "improvements_made": [
+        "list of specific improvements made to the original query"
+    ],
+    "expected_output_columns": [
+        "predicted column names that will likely appear in the results"
+    ],
+    "query_intent": "reconciliation|analysis|transformation|aggregation|filtering|joining|reporting",
+    "confidence_score": 0.85,
+    "suggestions": [
+        "additional suggestions for getting better results"
+    ],
+    "business_context": "brief explanation of what this query accomplishes from a business perspective"
+}}
+"""
+        
+        generation_params = get_llm_generation_params()
+        messages = [
+            LLMMessage(role="system", content="You are an expert data analyst specialized in improving natural language queries for data processing."),
+            LLMMessage(role="user", content=prompt)
+        ]
+        
+        response = llm_service.generate_text(
+            messages=messages,
+            **generation_params
+        )
+        
+        if not response.success:
+            raise HTTPException(status_code=500, detail=f"Failed to improve prompt: {response.error}")
+        
+        # Parse the JSON response with enhanced error handling
+        try:
+            import json
+            
+            # Clean the response content first
+            content = response.content.strip()
+            
+            # Try to fix common JSON issues
+            if content.endswith(','):
+                content = content[:-1]  # Remove trailing comma
+            
+            # If the JSON seems truncated, try to complete it
+            if not content.endswith('}'):
+                content += '}'
+                
+            improvement_data = json.loads(content)
+            
+            return {
+                "success": True,
+                "original_prompt": request.user_prompt,
+                "improved_prompt": improvement_data.get("improved_prompt", request.user_prompt),
+                "improvements_made": improvement_data.get("improvements_made", []),
+                "expected_output_columns": improvement_data.get("expected_output_columns", []),
+                "query_intent": improvement_data.get("query_intent", "analysis"),
+                "confidence_score": improvement_data.get("confidence_score", 0.8),
+                "suggestions": improvement_data.get("suggestions", []),
+                "business_context": improvement_data.get("business_context", ""),
+                "intent_analysis": intent_summary,
+                "files_analyzed": len(file_data_list)
+            }
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+            logger.error(f"Raw response: {response.content}")
+            logger.error(f"Cleaned content: {content if 'content' in locals() else 'N/A'}")
+            
+            # Fallback: try to extract basic information using regex
+            try:
+                import re
+                improved_prompt_match = re.search(r'"improved_prompt":\s*"([^"]*)"', response.content)
+                improved_prompt = improved_prompt_match.group(1) if improved_prompt_match else request.user_prompt
+                
+                return {
+                    "success": True,
+                    "original_prompt": request.user_prompt,
+                    "improved_prompt": improved_prompt,
+                    "improvements_made": ["AI service returned malformed response - basic improvement applied"],
+                    "expected_output_columns": [],
+                    "query_intent": "analysis",
+                    "confidence_score": 0.5,
+                    "suggestions": ["Please try again - AI service had a temporary formatting issue"],
+                    "business_context": "Unable to extract detailed business context due to AI service response formatting issue",
+                    "intent_analysis": intent_summary,
+                    "files_analyzed": len(file_data_list)
+                }
+            except Exception as fallback_error:
+                logger.error(f"Fallback parsing also failed: {fallback_error}")
+                raise HTTPException(status_code=500, detail="Invalid response format from AI service")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error improving prompt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prompt improvement failed: {str(e)}")
+
+
 @router.get("/health")
 def health_check():
     """Health check endpoint for miscellaneous service"""
@@ -1174,6 +1384,6 @@ def health_check():
         "capabilities": {
             "max_files": 5,
             "supported_formats": ["csv", "excel", "json"],
-            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions", "intent_verification"]
+            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions", "intent_verification", "prompt_improvement"]
         }
     }
