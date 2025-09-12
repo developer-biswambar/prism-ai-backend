@@ -45,8 +45,8 @@ class UseCaseConfigModel(BaseModel):
 
 class CreateUseCaseRequest(BaseModel):
     """Request model for creating a new use case"""
-    name: str = Field(..., min_length=1, max_length=200, description="Use case display name")
-    description: str = Field(..., min_length=1, max_length=5000, description="Detailed description")
+    name: str = Field(..., min_length=1, max_length=50000, description="Use case display name")
+    description: str = Field(..., min_length=1, max_length=50000, description="Detailed description")
     use_case_type: str = Field(..., description="Use case type")
     category: str = Field(..., description="Use case category")
     tags: List[str] = Field(default_factory=list, description="Use case tags")
@@ -63,8 +63,8 @@ class CreateUseCaseRequest(BaseModel):
 
 class UpdateUseCaseRequest(BaseModel):
     """Request model for updating an existing use case"""
-    name: Optional[str] = Field(None, min_length=1, max_length=200)
-    description: Optional[str] = Field(None, min_length=1, max_length=5000)
+    name: Optional[str] = Field(None, min_length=1, max_length=50000)
+    description: Optional[str] = Field(None, min_length=1, max_length=50000)
     category: Optional[str] = Field(None)
     industry: Optional[str] = Field(None)
     tags: Optional[List[str]] = Field(None)
@@ -564,8 +564,8 @@ class TemplateApplicationRequest(BaseModel):
 class CreateTemplateFromQueryRequest(BaseModel):
     """Request model for creating template from successful query"""
     query_data: Dict[str, Any] = Field(..., description="Successful query execution data")
-    template_name: str = Field(..., min_length=1, max_length=200, description="Template name")
-    template_description: str = Field(..., min_length=1, max_length=5000, description="Template description")
+    template_name: str = Field(..., min_length=1, max_length=50000, description="Template name")
+    template_description: str = Field(..., min_length=1, max_length=50000, description="Template description")
     template_type: str = Field(..., description="Template type")
     category: str = Field(..., description="Template category")
     tags: List[str] = Field(default_factory=list, description="Template tags")

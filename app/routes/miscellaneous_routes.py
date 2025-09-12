@@ -1,6 +1,6 @@
 import io
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union
 
 import pandas as pd
@@ -88,7 +88,7 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
     Process miscellaneous data operations using natural language prompts
     Supports up to 5 files with DuckDB backend
     """
-    start_time = datetime.now()
+    start_time = datetime.now(timezone.utc)
     
     try:
         # Import services
@@ -121,7 +121,7 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
         processor.store_results(process_id, result)
         
         # Calculate processing time
-        processing_time = (datetime.now() - start_time).total_seconds()
+        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         return MiscellaneousResponse(
             success=True,
@@ -843,7 +843,7 @@ def save_prompt(prompt_data: dict):
             "description": prompt_data.get("description", ""),
             "category": prompt_data.get("category", "analysis"),
             "file_pattern": prompt_data.get("file_pattern", "General data files"),
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         
         saved_prompts_storage[prompt_id] = saved_prompt
@@ -921,7 +921,7 @@ def update_saved_prompt(prompt_id: str, prompt_data: dict):
             "category": prompt_data.get("category", existing_prompt["category"]),
             "file_pattern": prompt_data.get("file_pattern", existing_prompt["file_pattern"]),
             "created_at": existing_prompt["created_at"],  # Keep original creation date
-            "updated_at": datetime.now().isoformat(),  # Add update timestamp
+            "updated_at": datetime.now(timezone.utc).isoformat(),  # Add update timestamp
         }
         
         # Save updated prompt
@@ -983,7 +983,7 @@ def get_prompt_suggestions(request: PromptSuggestionsRequest):
         
         # Create cache key from request context
         cache_key = hash(f"{request.text_before_cursor.lower()[:50]}_{len(request.files_context)}")
-        current_time = datetime.now().timestamp()
+        current_time = datetime.now(timezone.utc).timestamp()
         
         # Check cache first
         if cache_key in suggestions_cache:
@@ -997,7 +997,7 @@ def get_prompt_suggestions(request: PromptSuggestionsRequest):
                     "processing_time_ms": 5  # Cached response time
                 }
         
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         llm_service = get_llm_service()
         if not llm_service.is_available():
@@ -1083,7 +1083,7 @@ Generate 3 completions. Focus: operations, file refs, columns. JSON only."""
                         'confidence': min(max(suggestion.get('confidence', 0.5), 0.0), 1.0)
                     })
             
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             
             # Cache successful results
             if valid_suggestions and len(request.text_before_cursor) > 5:
@@ -1199,10 +1199,8 @@ def improve_user_prompt(request: PromptImprovementRequest):
                 # Get actual dataframe for data sample analysis
                 df = file_data['dataframe']
                 
-                # Build file context for prompt with data samples
-                columns_preview = ', '.join(df.columns[:8])
-                if len(df.columns) > 8:
-                    columns_preview += f" (and {len(df.columns) - 8} more)"
+                # Build file context for prompt with data samples - show all columns
+                columns_preview = ', '.join(df.columns)
                 
                 # Get sample data (first 3 rows for analysis)
                 sample_rows = []
@@ -1380,7 +1378,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "miscellaneous_data_processor",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "capabilities": {
             "max_files": 5,
             "supported_formats": ["csv", "excel", "json"],

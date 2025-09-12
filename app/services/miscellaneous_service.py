@@ -291,6 +291,14 @@ class AIQueryGenerator:
 
 ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
 
+🚨 CRITICAL TABLE NAMING RULES:
+- ALWAYS use table names: file_1, file_2, file_3 (in that exact format)
+- file_1 = First uploaded file (usually transactions/sales data)
+- file_2 = Second uploaded file (usually inventory/product data)  
+- file_3 = Third uploaded file (usually returns/secondary data)
+- NEVER use original filenames or terms like "inventory", "sales", "products"
+- NEVER use "FROM file_3" when you mean sales data - sales data is ALWAYS file_1
+
 🚨 CRITICAL: CTE SYNTAX MUST BE PERFECT - COMMON ERROR PATTERN TO AVOID:
 ❌ NEVER WRITE THIS (causes syntax error):
 WITH demographics AS (SELECT ... FROM file_1),
@@ -343,10 +351,13 @@ WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
 - Always check column data types in the schema before choosing operations
 🚨 TOP SQL ERROR PREVENTION PRIORITIES:
 1. COLUMN EXISTENCE: Use only columns that exist in schema
-2. ALIAS CONSISTENCY: Don't mix columns from different table aliases  
-3. NULL HANDLING: Use NULLIF() to prevent division by zero
-4. TYPE SAFETY: Cast columns when needed for operations
-5. SIMPLE FIRST: Start with simple queries, add complexity only if needed
+2. CTE ALIAS CONSISTENCY: When using CTEs, ensure the alias in FROM matches the columns you're selecting
+   ❌ WRONG: SELECT si.category FROM sales_data si (if sales_data doesn't have category)
+   ✅ CORRECT: SELECT si.category FROM sales_inventory si (if sales_inventory has category)
+3. TABLE REFERENCE ACCURACY: Use the correct CTE/table that contains the columns you need
+4. NULL HANDLING: Use NULLIF() to prevent division by zero
+5. TYPE SAFETY: Cast columns when needed for operations
+6. SIMPLE FIRST: Start with simple queries, add complexity only if needed
 
 🎯 PREFER SIMPLE QUERIES OVER COMPLEX CTEs:
 ❌ AVOID: Multiple CTEs with complex joins (error-prone)
@@ -360,6 +371,18 @@ SELECT *,
        ("Retail_Price" - "Cost_Price") / NULLIF("Retail_Price", 0) as profit_margin
 FROM file_1
 WHERE "Retail_Price" > 0
+
+MULTI-FILE RECONCILIATION - SIMPLE APPROACH:
+✅ CORRECT: Direct joins without complex CTEs
+SELECT 
+    f2."Category",
+    SUM(f1."Retail_Price" * f1."Quantity") - 
+    COALESCE(SUM(f3."Refund_Amount"), 0) - 
+    COALESCE(SUM(f3."Restocking_Fee"), 0) as net_profit
+FROM file_1 f1 
+JOIN file_2 f2 ON f1."Product_Code" = f2."Product_Code"
+LEFT JOIN file_3 f3 ON f1."Transaction_ID" = f3."Original_Transaction_ID"
+GROUP BY f2."Category"
 
 EXAMPLE - AMOUNT TOLERANCE MATCHING:
 ✅ CORRECT - Simple approach: 
@@ -408,12 +431,18 @@ QUERY TYPE CLASSIFICATION:
 - "join": Multi-file analysis, data combination
 - "filter": Conditional selection, data subsetting
 
-RESPONSE FORMAT (CRITICAL):
+🚨 CRITICAL RESPONSE FORMAT (MUST BE VALID JSON):
 {
-  "sql_query": "YOUR_SQL_QUERY_HERE",
+  "sql_query": "SELECT * FROM file_1 WHERE condition",
   "query_type": "data_analysis|reconciliation|aggregation|join|filter|etc",
   "description": "Brief description of what the query does"
 }
+
+IMPORTANT RESPONSE RULES:
+- Return ONLY valid JSON (no additional text before or after)
+- The sql_query field must contain clean SQL without JSON escaping artifacts
+- Use proper table names (file_1, file_2, file_3) in the SQL
+- NO explanatory text outside the JSON structure
 
 DuckDB Advanced Features Available:
 - Window functions (ROW_NUMBER, RANK, LAG, LEAD, DENSE_RANK, etc.)
@@ -561,6 +590,7 @@ COMPLEX TEXT PROCESSING:
 
 🚨 CRITICAL REMINDERS:
 - Use ONLY the exact column names listed above (copy them exactly with quotes)
+- Choose the correct table (file_1, file_2, file_3, etc.) based on the columns and data it contains
 - Do NOT create or guess column names
 - If user mentions concepts not in columns, map to closest actual column
 - Explain any column mapping assumptions in the description field
@@ -635,9 +665,20 @@ REQUIRED JSON RESPONSE FORMAT:
             
             # Parse JSON response from LLM
             import json
+            import re
             try:
-                # The LLM service should have already extracted JSON using extract_json_string()
-                response_data = json.loads(response.content)
+                # Clean response content first
+                raw_content = response.content.strip()
+                logger.info(f"Raw AI response: {raw_content[:200]}...")
+                
+                # Try to extract JSON from the response
+                json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
+                    response_data = json.loads(json_str)
+                else:
+                    # If no JSON found, try to parse the whole response
+                    response_data = json.loads(raw_content)
                 
                 # Extract SQL query from JSON response
                 generated_sql = response_data.get('sql_query', '')
@@ -647,8 +688,18 @@ REQUIRED JSON RESPONSE FORMAT:
                 if not generated_sql:
                     raise ValueError("No SQL query found in JSON response")
                 
+                # Clean the SQL query of any JSON artifacts
+                cleaned_sql = generated_sql.strip()
+                if cleaned_sql.startswith('"') and cleaned_sql.endswith('"'):
+                    cleaned_sql = cleaned_sql[1:-1]  # Remove outer quotes
+                
+                # Unescape JSON string escapes
+                cleaned_sql = cleaned_sql.replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+                
+                logger.info(f"Cleaned SQL: {cleaned_sql[:200]}...")
+                
                 return {
-                    'sql_query': generated_sql.strip(),
+                    'sql_query': cleaned_sql,
                     'query_type': query_type,
                     'description': description,
                     'success': True,
@@ -657,14 +708,22 @@ REQUIRED JSON RESPONSE FORMAT:
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response from LLM: {e}")
-                logger.error(f"Raw response content: {response.content}")
+                logger.error(f"Raw response content: {raw_content}")
                 
-                # Fallback: try to extract SQL from raw response
-                raw_content = response.content.strip()
+                # Enhanced fallback: try to extract SQL from raw response
                 if raw_content.startswith('```sql'):
                     generated_sql = raw_content.replace('```sql', '').replace('```', '').strip()
                 elif raw_content.startswith('```'):
                     generated_sql = raw_content.replace('```', '').strip()
+                elif 'SELECT' in raw_content.upper():
+                    # Try to extract just the SQL part if it's mixed with other text
+                    sql_match = re.search(r'(WITH.*?;|SELECT.*?;|SELECT.*)', raw_content, re.DOTALL | re.IGNORECASE)
+                    if sql_match:
+                        generated_sql = sql_match.group(1).strip()
+                        if generated_sql.endswith(';'):
+                            generated_sql = generated_sql[:-1]  # Remove trailing semicolon
+                    else:
+                        generated_sql = raw_content
                 else:
                     generated_sql = raw_content
                 
@@ -1432,19 +1491,238 @@ class MiscellaneousProcessor:
         
         if len(result_df) == 0:
             return warnings
+    
+    def _analyze_sql_execution_error(
+        self, 
+        error_message: str, 
+        sql_query: str, 
+        table_schemas: Dict[str, List[Dict[str, Any]]], 
+        files_data: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Analyze SQL execution errors using AI to provide user-friendly explanations and suggestions
+        """
+        try:
+            logger.info("Starting AI error analysis...")
+            if not hasattr(self, 'ai_generator') or not self.ai_generator or not self.ai_generator.llm_service:
+                logger.warning("AI generator not available for error analysis")
+                return {
+                    'error_type': 'unknown',
+                    'user_friendly_message': 'SQL execution failed',
+                    'suggested_fixes': ['Check your SQL syntax and try again'],
+                    'confidence': 'low',
+                    'analysis_available': False
+                }
             
-        # Check for columns with all null values
-        null_columns = []
-        for col in result_df.columns:
-            if result_df[col].isna().all():
-                null_columns.append(col)
-        
-        if null_columns:
-            warnings.append(f"Columns with all null values: {', '.join(null_columns)}")
-        
-        # Check for duplicate rows
-        duplicate_count = result_df.duplicated().sum()
-        if duplicate_count > 0:
-            warnings.append(f"Found {duplicate_count} duplicate rows in results")
+            # Build context about the error
+            error_context = self._build_error_context(
+                error_message, sql_query, table_schemas, files_data
+            )
             
-        return warnings
+            # Create AI prompt for error analysis
+            system_prompt = """You are an expert SQL error analyst specialized in DuckDB queries. Analyze SQL execution errors and provide helpful, user-friendly explanations.
+
+Your task is to:
+1. Identify the specific error type and root cause
+2. Explain the error in simple, non-technical language
+3. Provide actionable suggestions to fix the issue
+4. Identify any patterns that led to the error
+
+Focus on common SQL issues:
+- Missing or misspelled column names
+- Table name issues (remember tables are file_1, file_2, etc.)
+- CTE alias consistency problems (using wrong CTE/table that doesn't contain required columns)
+- JOIN condition errors
+- Data type mismatches
+- Syntax errors (especially WITH clause issues)
+
+SPECIAL ATTENTION TO CTE ALIAS ERRORS:
+If error mentions "does not have a column named X":
+- Check if the SELECT is referencing the correct CTE/table
+- Example: SELECT si.category FROM sales_data si (WRONG if sales_data doesn't have category)
+- Should be: SELECT si.category FROM sales_inventory si (CORRECT if sales_inventory has category from join)
+
+RESPONSE FORMAT (JSON only):
+{
+  "error_type": "column_not_found|table_not_found|syntax_error|cte_alias_error|join_error|data_type_error|other",
+  "user_friendly_message": "Simple explanation of what went wrong",
+  "technical_details": "Technical explanation for advanced users",
+  "suggested_fixes": ["Step 1 to fix", "Step 2 to fix", "Alternative approach"],
+  "confidence": "high|medium|low",
+  "root_cause": "What specifically caused this error",
+  "prevention_tip": "How to avoid this error in future queries"
+}"""
+
+            user_message = f"""
+ANALYZE THIS SQL ERROR:
+
+Error Message: {error_message}
+
+SQL Query:
+```sql
+{sql_query}
+```
+
+{error_context}
+
+Please analyze this error and provide helpful guidance for fixing it."""
+
+            try:
+                from app.services.llm_service import LLMMessage
+                
+                messages = [
+                    LLMMessage(role="system", content=system_prompt),
+                    LLMMessage(role="user", content=user_message)
+                ]
+                
+                response = self.ai_generator.llm_service.generate_text(
+                    messages=messages,
+                    **self.ai_generator.generation_params
+                )
+                
+                if response.success:
+                    import json
+                    try:
+                        analysis_result = json.loads(response.content)
+                        
+                        # Validate required fields
+                        required_fields = ['error_type', 'user_friendly_message', 'suggested_fixes']
+                        for field in required_fields:
+                            if field not in analysis_result:
+                                analysis_result[field] = 'Not available'
+                        
+                        analysis_result['analysis_available'] = True
+                        return analysis_result
+                        
+                    except json.JSONDecodeError as parse_error:
+                        logger.error(f"Failed to parse AI error analysis: {parse_error}")
+                        # Try to extract key information from raw response
+                        return self._extract_error_analysis_fallback(response.content, error_message)
+                else:
+                    logger.error(f"AI error analysis failed: {response.error}")
+                    return self._create_basic_error_analysis(error_message, sql_query)
+                    
+            except Exception as ai_error:
+                logger.error(f"Error during AI analysis: {ai_error}")
+                return self._create_basic_error_analysis(error_message, sql_query)
+                
+        except Exception as e:
+            logger.error(f"Error analysis failed: {e}")
+            return {
+                'error_type': 'analysis_failed',
+                'user_friendly_message': 'Unable to analyze the error automatically',
+                'suggested_fixes': ['Check the SQL syntax and column names manually'],
+                'confidence': 'low',
+                'analysis_available': False
+            }
+    
+    def _build_error_context(
+        self, 
+        error_message: str, 
+        sql_query: str, 
+        table_schemas: Dict[str, List[Dict[str, Any]]], 
+        files_data: List[Dict[str, Any]]
+    ) -> str:
+        """Build context for error analysis"""
+        context_parts = []
+        
+        # Add available tables and columns
+        context_parts.append("AVAILABLE TABLES AND COLUMNS:")
+        for table_name, schema in table_schemas.items():
+            columns = [col_info['column_name'] for col_info in schema]
+            context_parts.append(f"- {table_name}: {', '.join(columns[:10])}{'...' if len(columns) > 10 else ''}")
+        
+        # Add file information
+        context_parts.append("\nFILE INFORMATION:")
+        for i, file_data in enumerate(files_data):
+            filename = file_data.get('filename', f'file_{i+1}')
+            df = file_data.get('dataframe')
+            if df is not None:
+                context_parts.append(f"- {filename}: {len(df)} rows, {len(df.columns)} columns")
+        
+        # Add common error patterns based on error message
+        if 'does not exist' in error_message.lower():
+            context_parts.append("\n🔍 ERROR PATTERN: Object not found")
+            if 'table' in error_message.lower():
+                context_parts.append("💡 Remember: Tables are named file_1, file_2, etc. (not original filenames)")
+            if 'column' in error_message.lower():
+                context_parts.append("💡 Check: Column names must be exact (case-sensitive, use quotes)")
+        
+        if 'alias' in error_message.lower() or 'does not have a column' in error_message.lower():
+            context_parts.append("\n🔍 ERROR PATTERN: CTE alias consistency issue")
+            context_parts.append("💡 Check: Each CTE has its own alias scope - don't mix columns from different CTEs")
+        
+        return "\n".join(context_parts)
+    
+    def _create_basic_error_analysis(self, error_message: str, sql_query: str) -> Dict[str, Any]:
+        """Create basic error analysis when AI analysis fails"""
+        error_lower = error_message.lower()
+        
+        if 'table' in error_lower and 'does not exist' in error_lower:
+            return {
+                'error_type': 'table_not_found',
+                'user_friendly_message': 'The query refers to a table that doesn\'t exist. Remember that uploaded files are named file_1, file_2, etc.',
+                'suggested_fixes': [
+                    'Use table names like file_1, file_2 instead of original filenames',
+                    'Check the available tables in your files'
+                ],
+                'confidence': 'high',
+                'analysis_available': True
+            }
+        elif 'column' in error_lower and ('does not exist' in error_lower or 'not found' in error_lower):
+            return {
+                'error_type': 'column_not_found',
+                'user_friendly_message': 'The query refers to a column that doesn\'t exist in the table.',
+                'suggested_fixes': [
+                    'Check the exact column names in your uploaded files',
+                    'Column names are case-sensitive and should be in quotes',
+                    'Verify spelling and spacing of column names'
+                ],
+                'confidence': 'high',
+                'analysis_available': True
+            }
+        elif 'alias' in error_lower or 'does not have a column named' in error_lower:
+            return {
+                'error_type': 'cte_alias_error',
+                'user_friendly_message': 'There\'s a problem with column references in your CTE (WITH clause) - you may be trying to use a column from the wrong table alias.',
+                'suggested_fixes': [
+                    'Check that each column reference uses the correct table alias',
+                    'Ensure you\'re not mixing columns from different CTEs',
+                    'Consider simplifying the query to avoid complex CTE aliases'
+                ],
+                'confidence': 'medium',
+                'analysis_available': True
+            }
+        else:
+            return {
+                'error_type': 'other',
+                'user_friendly_message': 'A SQL execution error occurred. Check your query syntax and column references.',
+                'suggested_fixes': [
+                    'Review the SQL syntax for any typos',
+                    'Verify all column and table names exist',
+                    'Try simplifying the query if it\'s complex'
+                ],
+                'confidence': 'low',
+                'analysis_available': True
+            }
+    
+    def _extract_error_analysis_fallback(self, raw_response: str, error_message: str) -> Dict[str, Any]:
+        """Extract error analysis from raw AI response when JSON parsing fails"""
+        # Simple fallback extraction
+        analysis = {
+            'error_type': 'other',
+            'user_friendly_message': 'SQL execution failed',
+            'suggested_fixes': ['Review and fix the SQL query'],
+            'confidence': 'low',
+            'analysis_available': True
+        }
+        
+        # Try to extract useful information from the response
+        if 'column' in raw_response.lower() and 'not found' in raw_response.lower():
+            analysis['error_type'] = 'column_not_found'
+            analysis['user_friendly_message'] = 'A column referenced in the query was not found'
+        elif 'table' in raw_response.lower() and 'not exist' in raw_response.lower():
+            analysis['error_type'] = 'table_not_found'
+            analysis['user_friendly_message'] = 'A table referenced in the query does not exist'
+        
+        return analysis

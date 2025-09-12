@@ -10,7 +10,7 @@ import os
 import pickle
 import gzip
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 load_dotenv()
@@ -180,7 +180,7 @@ class S3StorageService:
             s3_key = self._get_s3_key(key)
             extra_args = {
                 'Metadata': {
-                    'created_at': datetime.now().isoformat(),
+                    'created_at': datetime.now(timezone.utc).isoformat(),
                     'compressed': str(is_compressed),
                     'original_size': str(len(serialized_data))
                 }
@@ -199,7 +199,7 @@ class S3StorageService:
                 metadata_with_timestamp = {
                     **metadata,
                     '_storage_metadata': {
-                        'created_at': datetime.now().isoformat(),
+                        'created_at': datetime.now(timezone.utc).isoformat(),
                         'data_key': s3_key,
                         'compressed': is_compressed,
                         'original_size': len(serialized_data)

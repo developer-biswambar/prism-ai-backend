@@ -2,7 +2,7 @@
 import io
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import pandas as pd
@@ -766,7 +766,7 @@ async def upload_file(
             "total_rows": int(total_rows),
             "total_columns": int(total_cols),
             "columns": list(df.columns),
-            "upload_time": datetime.utcnow().isoformat(),
+            "upload_time": datetime.now(timezone.utc).isoformat(),
             "data_types": {col: str(dtype) for col, dtype in df.dtypes.items()},
             "sheet_name": sheet_name if sheet_name else None,  # Store selected sheet
             "cleanup_performed": cleanup_stats,  # Include data cleaning statistics
