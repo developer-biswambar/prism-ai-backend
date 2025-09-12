@@ -963,11 +963,14 @@ class MiscellaneousProcessor:
                     
                 except Exception as e:
                     logger.error(f"Query execution failed: {e}")
+                    logger.info("🔍 DEBUG: Starting AI error analysis for SQL execution failure")
                     
                     # Analyze the error with AI to provide better feedback
                     error_analysis = self._analyze_sql_execution_error(
                         str(e), generated_sql, table_schemas, files_data
                     )
+                    
+                    logger.info(f"🔍 DEBUG: Error analysis result: {error_analysis}")
                     
                     return {
                         'success': False,

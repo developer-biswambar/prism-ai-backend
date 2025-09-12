@@ -52,6 +52,7 @@ class MiscellaneousResponse(BaseModel):
     processing_time_seconds: Optional[float] = None
     errors: Optional[List[str]] = []
     warnings: Optional[List[str]] = []
+    error_analysis: Optional[Dict[str, Any]] = None
 
 
 def get_file_by_id(file_id: str):
@@ -124,14 +125,15 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
         processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         return MiscellaneousResponse(
-            success=True,
-            message=f"Successfully processed {len(retrieved_files)} files",
+            success=result.get('success', True),
+            message=f"Successfully processed {len(retrieved_files)} files" if result.get('success', True) else "Processing failed",
             process_id=process_id,
             generated_sql=result.get('generated_sql'),
             row_count=result.get('row_count'),
             processing_time_seconds=round(processing_time, 3),
             errors=result.get('errors', []),
-            warnings=result.get('warnings', [])
+            warnings=result.get('warnings', []),
+            error_analysis=result.get('error_analysis')
         )
         
     except HTTPException:

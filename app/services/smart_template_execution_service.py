@@ -352,12 +352,23 @@ class SmartTemplateExecutionService:
             analysis['available_columns'] = all_available_columns
             
             # Parse SQL binder errors to find missing columns
-            if 'Binder Error' in error_message and 'Referenced column' in error_message:
+            if 'Binder Error' in error_message:
                 analysis['error_type'] = 'missing_column'
                 
-                # Extract missing column name from error
+                # Extract missing column name from different error patterns
                 import re
+                
+                # Pattern 1: "Referenced column "column_name" not found"
                 column_match = re.search(r'Referenced column "([^"]+)" not found', error_message)
+                
+                # Pattern 2: "does not have a column named "column_name""
+                if not column_match:
+                    column_match = re.search(r'does not have a column named "([^"]+)"', error_message)
+                
+                # Pattern 3: "column "column_name" not found"
+                if not column_match:
+                    column_match = re.search(r'column "([^"]+)" not found', error_message)
+                
                 if column_match:
                     missing_column = column_match.group(1)
                     analysis['missing_columns'] = [missing_column]
