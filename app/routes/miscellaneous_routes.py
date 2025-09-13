@@ -37,7 +37,7 @@ class MiscellaneousRequest(BaseModel):
     
     @validator('files')
     def validate_files_count(cls, v):
-        if len(v) < 1 or len(v) > 5:
+        if len(v) < 1 or len(v) > 10:
             raise ValueError("Must provide between 1 and 5 files")
         return v
 
