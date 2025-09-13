@@ -1128,9 +1128,9 @@ Generate 3 completions. Focus: operations, file refs, columns. JSON only."""
 
 @router.post("/verify-intent")
 def verify_query_intent(request: IntentVerificationRequest):
-    """Verify and analyze query intent before execution"""
+    """Enhanced query intent verification with detailed column validation and intelligent suggestions"""
     try:
-        from app.services.intent_service import QueryIntentExtractor
+        from app.services.enhanced_intent_service import EnhancedIntentVerifier
         
         # Get selected file data from file IDs
         file_data_list = []
@@ -1149,15 +1149,17 @@ def verify_query_intent(request: IntentVerificationRequest):
         if not file_data_list:
             raise HTTPException(status_code=400, detail="No valid files provided for analysis")
         
-        # Extract intent using the new service with file data objects
-        intent_extractor = QueryIntentExtractor()
-        intent_summary = intent_extractor.extract_intent(request.user_prompt, file_data_list)
+        logger.info(f"🔍 Starting enhanced intent verification for prompt: {request.user_prompt[:100]}...")
         
-        logger.info(f"Intent verification completed for prompt: {request.user_prompt[:50]}...")
+        # Use enhanced intent verification system
+        enhanced_verifier = EnhancedIntentVerifier()
+        verification_results = enhanced_verifier.verify_intent_detailed(request.user_prompt, file_data_list)
+        
+        logger.info(f"✅ Enhanced intent verification completed - Feasibility: {verification_results.get('feasibility_score', 0):.2f}")
         
         return {
             "success": True,
-            "intent_summary": intent_summary,
+            "verification_results": verification_results,
             "original_prompt": request.user_prompt,
             "files_count": len(request.files)
         }
@@ -1165,16 +1167,7 @@ def verify_query_intent(request: IntentVerificationRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error verifying query intent: {str(e)}")
-        
-        # Clean up any temporary files in case of error
-        if 'selected_files' in locals():
-            for temp_file in selected_files:
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
-        
+        logger.error(f"Error in enhanced intent verification: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Intent verification failed: {str(e)}")
 
 
