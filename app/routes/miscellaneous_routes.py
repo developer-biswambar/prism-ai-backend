@@ -118,6 +118,21 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
         # Generate process ID
         process_id = generate_uuid('misc')
         
+        # Always store file data for SQL execution, even on processing failures
+        # This allows users to explore data manually even when AI processing fails
+        if not result.get('success', True):  # Processing failed
+            logger.info(f"Processing failed, storing raw file data for manual SQL exploration - Process ID: {process_id}")
+            # Enhance result with raw file data
+            result['files_data'] = retrieved_files
+            result['processing_info'] = {
+                'process_type': request.process_type,
+                'process_name': request.process_name, 
+                'user_prompt': request.user_prompt,
+                'input_files': len(retrieved_files),
+                'processing_failed': True,
+                'failure_reason': result.get('message', 'Unknown error')
+            }
+        
         # Store results for later retrieval
         processor.store_results(process_id, result)
         
@@ -391,7 +406,7 @@ Keep the explanation accessible to non-technical users.
 class ExecuteQueryRequest(BaseModel):
     """Request model for executing custom SQL queries"""
     sql_query: str
-    process_id: str  # Reference to existing process data
+    process_id: str  # Reference to existing process data (always required)
     limit: Optional[int] = 100  # Limit results to prevent large responses
 
 
@@ -422,6 +437,19 @@ def execute_custom_query(request: ExecuteQueryRequest):
     """Execute a custom SQL query on existing processed data"""
     
     try:
+        # process_id is now required by Pydantic, so this check is redundant
+        # but keeping for extra safety
+        if not request.process_id:
+            return {
+                'success': False,
+                'error': 'No data available for SQL execution. Please process your data first.',
+                'suggestions': [
+                    'Click "Process Data with AI" to analyze your files',
+                    'SQL execution works on recently processed data',
+                    'Make sure to complete data processing before executing custom queries'
+                ]
+            }
+        
         from app.services.miscellaneous_service import MiscellaneousProcessor
         
         processor = MiscellaneousProcessor()
@@ -429,7 +457,15 @@ def execute_custom_query(request: ExecuteQueryRequest):
         # Get the stored results to access the same data and schemas
         stored_result = processor.get_results(request.process_id)
         if not stored_result:
-            raise HTTPException(status_code=404, detail=f"Process ID {request.process_id} not found")
+            return {
+                'success': False,
+                'error': f'Process data not found (ID: {request.process_id}). The data may have expired.',
+                'suggestions': [
+                    'Re-run your data processing to create fresh data',
+                    'Process data expires after a certain time period',
+                    'Click "Process Data with AI" to regenerate the dataset'
+                ]
+            }
         
         # Debug: Log what we got from storage
         logger.info(f"DEBUG: stored_result keys: {list(stored_result.keys())}")
