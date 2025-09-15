@@ -151,13 +151,68 @@ class DuckDBProcessor:
                 logger.warning(f"Failed to clean up temp file {temp_file}: {e}")
         self.temp_files.clear()
     
+    def _ensure_duckdb_safe_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Ensure DataFrame has DuckDB-safe data types by detecting and fixing problematic columns.
+        Similar to detect_leading_zero_columns but for DuckDB casting issues.
+        
+        This prevents errors like: "Failed to cast value: Could not convert string '000VP' to INT32"
+        """
+        try:
+            # Create a copy to avoid modifying the original
+            safe_df = df.copy()
+            columns_converted = []
+            
+            for col in safe_df.columns:
+                # Skip if already string type
+                if safe_df[col].dtype == 'object':
+                    continue
+                    
+                # Check for mixed alphanumeric content that could cause casting issues
+                non_null_values = safe_df[col].dropna().astype(str)
+                has_mixed_content = False
+                
+                # Sample first 50 values to check for problematic patterns
+                for value in non_null_values.head(50):
+                    if isinstance(value, str) and value.strip():
+                        stripped_val = value.strip()
+                        
+                        # Check for patterns like "000VP", "O00VP", alphanumeric codes
+                        if any([
+                            # Has letters mixed with numbers
+                            any(c.isalpha() for c in stripped_val) and any(c.isdigit() for c in stripped_val),
+                            # Starts with zeros followed by letters (like "000VP")
+                            stripped_val.startswith('0') and any(c.isalpha() for c in stripped_val),
+                            # Contains common alphanumeric patterns
+                            len(stripped_val) > 1 and not stripped_val.replace('.', '').replace('-', '').replace('+', '').isdigit()
+                        ]):
+                            has_mixed_content = True
+                            break
+                
+                # Convert problematic columns to string
+                if has_mixed_content:
+                    safe_df[col] = safe_df[col].astype(str)
+                    columns_converted.append(col)
+            
+            if columns_converted:
+                logger.info(f"🔧 Converted {len(columns_converted)} columns to string type for DuckDB safety: {columns_converted}")
+            
+            return safe_df
+            
+        except Exception as e:
+            logger.warning(f"Error ensuring DuckDB-safe types: {e}. Using original DataFrame.")
+            return df
+    
     def register_dataframe(self, df: pd.DataFrame, table_name: str):
         """Register a pandas DataFrame as a table in DuckDB"""
+        # Create a safe copy of the DataFrame with type corrections
+        safe_df = self._ensure_duckdb_safe_types(df)
+        
         # Store DataFrame for later use with fresh connections
         if not hasattr(self, '_registered_tables'):
             self._registered_tables = {}
-        self._registered_tables[table_name] = df
-        logger.info(f"Stored DataFrame as table '{table_name}' with {len(df)} rows for registration")
+        self._registered_tables[table_name] = safe_df
+        logger.info(f"Stored DataFrame as table '{table_name}' with {len(safe_df)} rows for registration")
         
     def create_temp_file_from_df(self, df: pd.DataFrame, filename: str) -> str:
         """Create a temporary file from DataFrame for DuckDB file operations"""
