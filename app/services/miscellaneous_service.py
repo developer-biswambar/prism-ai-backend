@@ -392,7 +392,11 @@ WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
 
 🔧 TRANSFORMATION OPERATIONS:  
 - Data cleaning: Use TRIM(), UPPER(), LOWER(), REPLACE(), REGEXP_REPLACE()
-- Type conversion: Use CAST(), TRY_CAST() for safe conversions
+- Type conversion: **ALWAYS use TRY_CAST() instead of CAST() to avoid query failure on bad rows**
+  • TRY_CAST(col AS INT) instead of CAST(col AS INT) - returns NULL if conversion fails
+  • TRY_CAST(col AS FLOAT) instead of CAST(col AS FLOAT) - handles mixed alphanumeric data
+  • TRY_CAST(col AS DATE) instead of CAST(col AS DATE) - graceful date parsing
+  • Default to keeping the raw string if conversion fails (NULL handling)
 - Date parsing: Use CASE WHEN column IS NOT NULL AND column != '' THEN STRPTIME(column, 'format') ELSE NULL END
 - Derivation: Create calculated columns with CASE WHEN, mathematical operations
 - Aggregation: Use GROUP BY with SUM(), COUNT(), AVG(), MIN(), MAX()
@@ -411,12 +415,34 @@ WHERE ABS(f1."Amount" - f2."Net_Amount") <= 0.01
    ✅ CORRECT: SELECT si.category FROM sales_inventory si (if sales_inventory has category)
 3. TABLE REFERENCE ACCURACY: Use the correct CTE/table that contains the columns you need
 4. NULL HANDLING: Use NULLIF() to prevent division by zero
-5. TYPE SAFETY: Cast columns when needed for operations
+5. TYPE SAFETY: **CRITICAL - Use TRY_CAST() for all data type conversions**
+   • TRY_CAST(column AS INT) instead of CAST() - prevents "000VP" casting errors
+   • TRY_CAST(column AS FLOAT) for numeric operations on mixed data
+   • Always handle NULL results from failed conversions gracefully
 6. SIMPLE FIRST: Start with simple queries, add complexity only if needed
 
 🎯 PREFER SIMPLE QUERIES OVER COMPLEX CTEs:
 ❌ AVOID: Multiple CTEs with complex joins (error-prone)
 ✅ PREFER: Single CTE or simple subqueries when possible
+
+🔒 SAFE CASTING EXAMPLES - ALWAYS USE TRY_CAST():
+❌ DANGEROUS: CAST(mixed_column AS INT) -- fails on "000VP", "O00VP"
+✅ SAFE: TRY_CAST(mixed_column AS INT) -- returns NULL for "000VP", "O00VP"
+
+❌ DANGEROUS: CAST(price AS FLOAT) -- fails on "N/A", "TBD"  
+✅ SAFE: TRY_CAST(price AS FLOAT) -- returns NULL for "N/A", "TBD"
+
+❌ DANGEROUS: CAST(date_str AS DATE) -- fails on malformed dates
+✅ SAFE: TRY_CAST(date_str AS DATE) -- returns NULL for bad dates
+
+EXAMPLE: Safe numeric operations on mixed data:
+SELECT 
+    product_code,  -- keep as string
+    TRY_CAST(price AS DOUBLE) as numeric_price,
+    CASE WHEN TRY_CAST(price AS DOUBLE) IS NOT NULL 
+         THEN TRY_CAST(price AS DOUBLE) * 1.1 
+         ELSE NULL END as price_with_markup
+FROM file_1
 
 SIMPLE APPROACH EXAMPLE:
 SELECT *, 
