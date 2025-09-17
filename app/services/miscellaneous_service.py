@@ -4,6 +4,7 @@ import json
 import tempfile
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
@@ -17,6 +18,7 @@ import duckdb
 
 # Import the global thread pool
 from app.utils.global_thread_pool import get_data_processing_executor, submit_data_processing_task
+from app.services.process_analytics_service import ProcessAnalyticsService
 
 logger = logging.getLogger(__name__)
 
@@ -784,7 +786,8 @@ REQUIRED JSON RESPONSE FORMAT:
                     'query_type': query_type,
                     'description': description,
                     'success': True,
-                    'context_used': tables_context
+                    'context_used': tables_context,
+                    'token_usage': response.token_usage  # Include token usage from LLM response
                 }
                 
             except json.JSONDecodeError as e:
@@ -883,6 +886,7 @@ class MiscellaneousProcessor:
     def __init__(self):
         self.storage = _shared_storage  # Use shared storage
         self.ai_generator = AIQueryGenerator()
+        self.analytics_service = ProcessAnalyticsService()
         
     def process_core_request(
         self, 
@@ -895,6 +899,21 @@ class MiscellaneousProcessor:
         """
         Process natural language query against multiple files
         """
+        # Generate unique process ID and start timer
+        process_id = str(uuid.uuid4())
+        start_time = time.time()
+        
+        # Prepare analytics data
+        input_files_info = []
+        for file_data in files_data:
+            df = file_data['dataframe']
+            input_files_info.append({
+                'filename': file_data.get('filename', 'unknown'),
+                'file_id': file_data.get('file_id', ''),
+                'row_count': len(df),
+                'columns': list(df.columns)
+            })
+        
         try:
             with DuckDBProcessor() as duck_processor:
                 # Parallel processing for file registration and schema analysis
@@ -1018,9 +1037,28 @@ class MiscellaneousProcessor:
                         user_prompt, files_data, generated_sql, result_df, table_schemas
                     )
                     
+                    # Record process analytics
+                    processing_time = time.time() - start_time
+                    confidence_score = sql_result.get('confidence_score', 85.0)  # Default confidence if not provided
+                    
+                    self.analytics_service.record_process_execution(
+                        process_id=process_id,
+                        process_type="miscellaneous",
+                        process_name=f"Natural Language Query: {user_prompt[:50]}...",
+                        user_prompt=user_prompt,
+                        input_files=input_files_info,
+                        status="success",
+                        generated_sql=generated_sql,
+                        confidence_score=confidence_score,
+                        processing_time_seconds=processing_time,
+                        output_row_count=total_rows,
+                        token_usage=sql_result.get('token_usage')
+                    )
+                    
                     return {
                         'success': True,
                         "status": "success",
+                        'process_id': process_id,  # Include process ID for analytics tracking
                         'generated_sql': generated_sql,
                         'data': result_data,  # Preview data for UI
                         'full_data': result_df.to_dict('records') if output_format.lower() == "json" else result_df,  # Full data for storage
@@ -1032,7 +1070,9 @@ class MiscellaneousProcessor:
                             'input_files': len(files_data),
                             'query_type': sql_result.get('query_type', self._classify_query_type(generated_sql)),
                             'description': sql_result.get('description', ''),
-                            'tables_used': list(table_schemas.keys())
+                            'tables_used': list(table_schemas.keys()),
+                            'processing_time_seconds': processing_time,
+                            'confidence_score': confidence_score
                         },
                         'intent_summary': intent_summary,  # NEW: Add intent summary for visualization
                         'warnings': ['Results limited to first 100 rows for preview. Use "Open in Data Viewer" to see all results.'] if is_limited else [],
@@ -1053,8 +1093,28 @@ class MiscellaneousProcessor:
                     
                     logger.info(f"🔍 DEBUG: Error analysis result: {error_analysis}")
                     
+                    # Record failed process analytics
+                    processing_time = time.time() - start_time
+                    self.analytics_service.record_process_execution(
+                        process_id=process_id,
+                        process_type="miscellaneous",
+                        process_name=f"Natural Language Query: {user_prompt[:50]}...",
+                        user_prompt=user_prompt,
+                        input_files=input_files_info,
+                        status="failed",
+                        generated_sql=generated_sql,
+                        processing_time_seconds=processing_time,
+                        token_usage=sql_result.get('token_usage'),
+                        error_info={
+                            'error_type': 'sql_execution_error',
+                            'error_message': str(e),
+                            'error_context': error_analysis
+                        }
+                    )
+                    
                     return {
                         'success': False,
+                        'process_id': process_id,
                         'error': f"Query execution failed: {str(e)}",
                         'error_analysis': error_analysis,  # AI-powered error analysis
                         'generated_sql': generated_sql,

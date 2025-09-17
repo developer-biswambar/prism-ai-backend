@@ -56,6 +56,7 @@ class LLMResponse:
     model: str
     success: bool
     error: Optional[str] = None
+    token_usage: Optional[dict] = None  # Token usage information
 
 
 class LLMServiceInterface(ABC):
@@ -142,6 +143,17 @@ class OpenAILLMService(LLMServiceInterface):
 
             raw_content = response.choices[0].message.content.strip()
 
+            # Extract token usage information
+            token_usage = None
+            if hasattr(response, 'usage') and response.usage:
+                token_usage = {
+                    'prompt_tokens': response.usage.prompt_tokens,
+                    'completion_tokens': response.usage.completion_tokens,
+                    'total_tokens': response.usage.total_tokens,
+                    'model': self.model
+                }
+                logger.debug(f"OpenAI token usage: {token_usage}")
+
             # Try to sanitize JSON output
             try:
                 sanitized_content = extract_json_string(raw_content)
@@ -155,7 +167,8 @@ class OpenAILLMService(LLMServiceInterface):
                 content=sanitized_content,
                 provider="openai",
                 model=self.model,
-                success=True
+                success=True,
+                token_usage=token_usage
             )
 
         except Exception as e:
@@ -274,6 +287,16 @@ class AzureOpenAILLMService(LLMServiceInterface):
 
             raw_content = response.choices[0].message.content.strip()
 
+            # Extract token usage information
+            token_usage = None
+            if hasattr(response, 'usage') and response.usage:
+                token_usage = {
+                    'prompt_tokens': response.usage.prompt_tokens,
+                    'completion_tokens': response.usage.completion_tokens,
+                    'total_tokens': response.usage.total_tokens,
+                    'model': self.model
+                }
+
             # Try to sanitize JSON output
             try:
                 sanitized_content = extract_json_string(raw_content)
@@ -287,7 +310,8 @@ class AzureOpenAILLMService(LLMServiceInterface):
                 content=sanitized_content,
                 provider="azure_openai",
                 model=self.model,
-                success=True
+                success=True,
+                token_usage=token_usage
             )
 
         except Exception as e:

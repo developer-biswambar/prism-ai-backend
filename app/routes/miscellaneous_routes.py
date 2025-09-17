@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, validator
 
 from app.utils.uuid_generator import generate_uuid
+from app.services.process_analytics_service import ProcessAnalyticsService
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -42,6 +43,16 @@ class MiscellaneousRequest(BaseModel):
         return v
 
 
+class ProcessingInfo(BaseModel):
+    """Processing information for analytics"""
+    input_files: int
+    query_type: str
+    description: str
+    tables_used: List[str]
+    processing_time_seconds: float
+    confidence_score: float
+
+
 class MiscellaneousResponse(BaseModel):
     """Response model for miscellaneous data processing"""
     success: bool
@@ -53,6 +64,7 @@ class MiscellaneousResponse(BaseModel):
     errors: Optional[List[str]] = []
     warnings: Optional[List[str]] = []
     error_analysis: Optional[Dict[str, Any]] = None
+    processing_info: Optional[ProcessingInfo] = None  # Analytics data
 
 
 def get_file_by_id(file_id: str):
@@ -1403,6 +1415,46 @@ Respond in VALID JSON format only. Do not include any text before or after the J
         raise HTTPException(status_code=500, detail=f"Prompt improvement failed: {str(e)}")
 
 
+# Analytics service instance
+analytics_service = ProcessAnalyticsService()
+
+
+@router.get("/analytics/processes")
+def get_user_processes(
+    limit: int = 50,
+    last_evaluated_key: Optional[str] = None,
+    user_id: str = "default_user"
+):
+    """Get recent processes for a user with pagination"""
+    try:
+        result = analytics_service.get_user_processes(
+            user_id=user_id,
+            limit=limit,
+            last_evaluated_key=last_evaluated_key
+        )
+        return {
+            "success": True,
+            "data": result
+        }
+    except Exception as e:
+        logger.error(f"Error fetching user processes: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch processes: {str(e)}")
+
+
+@router.get("/analytics/summary")
+def get_analytics_summary(user_id: str = "default_user"):
+    """Get analytics summary for a user"""
+    try:
+        summary = analytics_service.get_process_analytics_summary(user_id=user_id)
+        return {
+            "success": True,
+            "data": summary
+        }
+    except Exception as e:
+        logger.error(f"Error fetching analytics summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch analytics summary: {str(e)}")
+
+
 @router.get("/health")
 def health_check():
     """Health check endpoint for miscellaneous service"""
@@ -1413,6 +1465,6 @@ def health_check():
         "capabilities": {
             "max_files": 5,
             "supported_formats": ["csv", "excel", "json"],
-            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions", "intent_verification", "prompt_improvement"]
+            "features": ["natural_language_queries", "sql_generation", "data_analysis", "prompt_management", "ai_suggestions", "intent_verification", "prompt_improvement", "process_analytics"]
         }
     }
