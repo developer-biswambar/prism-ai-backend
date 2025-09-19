@@ -1039,7 +1039,7 @@ class MiscellaneousProcessor:
                     
                     # Record process analytics
                     processing_time = time.time() - start_time
-                    confidence_score = sql_result.get('confidence_score', 85.0)  # Default confidence if not provided
+                    confidence_score = sql_result.get('confidence_score', 100.0)  # Default confidence if not provided
                     
                     self.analytics_service.record_process_execution(
                         process_id=process_id,
@@ -1385,7 +1385,7 @@ class MiscellaneousProcessor:
                     
                     file_info = {
                         "file_id": process_id,
-                        "filename": f"Miscellaneous_Results_{process_id}.csv",
+                        "filename": f"{process_id}.csv",
                         "size": size_bytes,
                         "file_size_mb": size_mb,
                         "upload_time": utc_now,
@@ -1424,7 +1424,7 @@ class MiscellaneousProcessor:
                     
                     file_info = {
                         "file_id": process_id,
-                        "filename": f"Miscellaneous_Results_{process_id}.csv",
+                        "filename": f"{process_id}.csv",
                         "size": size_bytes,
                         "file_size_mb": size_mb,
                         "upload_time": utc_now,

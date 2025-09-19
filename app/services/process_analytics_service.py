@@ -342,16 +342,13 @@ class ProcessAnalyticsService:
         
         # Cost per 1000 tokens (approximate pricing as of 2024)
         cost_rates = {
-            'gpt-4': {'prompt': 0.03, 'completion': 0.06},
-            'gpt-4-turbo': {'prompt': 0.01, 'completion': 0.03},
-            'gpt-3.5-turbo': {'prompt': 0.0015, 'completion': 0.002},
-            'claude-3-opus': {'prompt': 0.015, 'completion': 0.075},
-            'claude-3-sonnet': {'prompt': 0.003, 'completion': 0.015},
-            'claude-3-haiku': {'prompt': 0.00025, 'completion': 0.00125},
-            # New ones:
-            'gpt-4.1-nano': {'prompt': 0.10, 'completion': 0.40},
-            'o1': {'prompt': 15.0, 'completion': 60.0},
-            'o3': {'prompt': 2.0, 'completion': 8.0},
+            "gpt-5-nano": {"prompt": 0.00005, "completion": 0.0004},
+            "gpt-4.1-nano": {"prompt": 0.0001, "completion": 0.0004},
+            "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
+            "gpt-3.5-turbo": {"prompt": 0.0005, "completion": 0.0015},
+            "o1": {"prompt": 15.0, "completion": 60.0},  # very expensive
+            "o3": {"prompt": 2.0, "completion": 8.0},
+            # add others...
         }
 
         # Default to GPT-4 pricing if model not recognized

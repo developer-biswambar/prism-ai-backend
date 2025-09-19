@@ -128,7 +128,7 @@ def process_miscellaneous_data(request: MiscellaneousRequest):
         )
         
         # Generate process ID
-        process_id = generate_uuid('misc')
+        process_id = generate_uuid('data_analysis')
         
         # Always store file data for SQL execution, even on processing failures
         # This allows users to explore data manually even when AI processing fails
@@ -260,7 +260,8 @@ def download_miscellaneous_results(
             
             # Convert to bytes
             output = io.BytesIO(output.getvalue().encode('utf-8'))
-            filename = f"miscellaneous_{process_id}.csv"
+            filename_uuid = generate_uuid('data_analysis')
+            filename = f"{filename_uuid}.csv"
             media_type = "text/csv"
             
         elif format.lower() == "excel":
@@ -280,7 +281,8 @@ def download_miscellaneous_results(
                 metadata_df.to_excel(writer, sheet_name='Metadata', index=False)
             
             output.seek(0)
-            filename = f"miscellaneous_{process_id}.xlsx"
+            filename_uuid = generate_uuid('data_analysis')
+            filename = f"{filename_uuid}.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             
         else:
