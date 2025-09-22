@@ -376,3 +376,96 @@ class ProcessAnalyticsService:
             'process_type_breakdown': {},
             'recent_processes': []
         }
+
+    def get_all_processes(
+        self,
+        limit: int = 50,
+        last_evaluated_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get recent processes from all users"""
+        try:
+            scan_params = {
+                'Limit': limit
+            }
+            
+            if last_evaluated_key:
+                scan_params['ExclusiveStartKey'] = json.loads(last_evaluated_key)
+            
+            response = self.table.scan(**scan_params)
+            
+            processes = [self._decimal_to_number(item) for item in response.get('Items', [])]
+            
+            # Sort by created_at descending (most recent first)
+            processes.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            
+            return {
+                'processes': processes,
+                'last_evaluated_key': json.dumps(response.get('LastEvaluatedKey')) if response.get('LastEvaluatedKey') else None,
+                'total_count': len(processes)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get all processes: {str(e)}")
+            return {'processes': [], 'last_evaluated_key': None, 'total_count': 0}
+
+    def get_universal_analytics_summary(self) -> Dict[str, Any]:
+        """Get analytics summary for all users"""
+        try:
+            # Scan all processes (could be optimized with time ranges)
+            response = self.table.scan(
+                Limit=1000  # Reasonable limit for analytics
+            )
+            
+            processes = [self._decimal_to_number(item) for item in response.get('Items', [])]
+            
+            if not processes:
+                return self._empty_analytics_summary()
+            
+            # Calculate summary statistics
+            total_processes = len(processes)
+            successful_processes = len([p for p in processes if p.get('status') == 'success'])
+            failed_processes = len([p for p in processes if p.get('status') == 'failed'])
+            
+            total_input_rows = sum(p.get('input_row_count', 0) for p in processes)
+            total_output_rows = sum(p.get('output_row_count', 0) for p in processes)
+            total_processing_time = sum(p.get('processing_time_seconds', 0) for p in processes)
+            
+            # Token usage analytics
+            total_tokens = sum(p.get('token_usage', {}).get('total_tokens', 0) for p in processes)
+            total_cost = sum(p.get('token_usage', {}).get('estimated_cost_usd', 0) for p in processes)
+            
+            # Process type breakdown
+            process_types = {}
+            for process in processes:
+                process_type = process.get('process_type', 'unknown')
+                if process_type not in process_types:
+                    process_types[process_type] = 0
+                process_types[process_type] += 1
+            
+            # Calculate rates and averages
+            success_rate = round((successful_processes / total_processes) * 100, 2) if total_processes > 0 else 0
+            avg_processing_time = round(total_processing_time / total_processes, 2) if total_processes > 0 else 0
+            avg_cost_per_process = round(total_cost / total_processes, 6) if total_processes > 0 else 0
+            
+            # Get recent processes (last 10)
+            recent_processes = sorted(processes, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
+            
+            return {
+                'total_processes': total_processes,
+                'successful_processes': successful_processes,
+                'failed_processes': failed_processes,
+                'success_rate': success_rate,
+                'total_input_rows': total_input_rows,
+                'total_output_rows': total_output_rows,
+                'total_processing_time_seconds': total_processing_time,
+                'avg_processing_time_seconds': avg_processing_time,
+                'total_tokens_used': total_tokens,
+                'total_estimated_cost_usd': total_cost,
+                'avg_cost_per_process': avg_cost_per_process,
+                'process_type_breakdown': process_types,
+                'recent_processes': recent_processes
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get universal analytics summary: {str(e)}")
+            return self._empty_analytics_summary()

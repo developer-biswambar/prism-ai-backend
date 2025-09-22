@@ -1422,15 +1422,13 @@ analytics_service = ProcessAnalyticsService()
 
 
 @router.get("/analytics/processes")
-def get_user_processes(
+def get_all_processes(
     limit: int = 50,
-    last_evaluated_key: Optional[str] = None,
-    user_id: str = "default_user"
+    last_evaluated_key: Optional[str] = None
 ):
-    """Get recent processes for a user with pagination"""
+    """Get recent processes from all users with pagination"""
     try:
-        result = analytics_service.get_user_processes(
-            user_id=user_id,
+        result = analytics_service.get_all_processes(
             limit=limit,
             last_evaluated_key=last_evaluated_key
         )
@@ -1439,15 +1437,15 @@ def get_user_processes(
             "data": result
         }
     except Exception as e:
-        logger.error(f"Error fetching user processes: {str(e)}")
+        logger.error(f"Error fetching processes: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch processes: {str(e)}")
 
 
 @router.get("/analytics/summary")
-def get_analytics_summary(user_id: str = "default_user"):
-    """Get analytics summary for a user"""
+def get_universal_analytics_summary():
+    """Get analytics summary for all users"""
     try:
-        summary = analytics_service.get_process_analytics_summary(user_id=user_id)
+        summary = analytics_service.get_universal_analytics_summary()
         return {
             "success": True,
             "data": summary
