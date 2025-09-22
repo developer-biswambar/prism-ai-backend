@@ -47,6 +47,17 @@ waitress==2.1.2
 python-dotenv==1.0.1
 structlog==24.4.0
 
+# Core LangChain packages
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-openai>=0.0.5
+
+# SQL Database support
+sqlalchemy>=2.0.0
+
+# Additional utilities
+tiktoken>=0.5.0  # For token counting with OpenAI models
+
 # Development Dependencies (optional - install separately if needed)
 # pytest==8.3.3
 # pytest-asyncio==0.24.0
