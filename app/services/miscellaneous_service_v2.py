@@ -18,7 +18,7 @@ import os
 import tempfile
 import time
 import uuid
-from concurrent.futures import as_completed
+# Removed concurrent.futures to avoid DuckDB threading issues
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
@@ -53,7 +53,7 @@ from app.services.miscellaneous_service import (
     DuckDBConnectionPool,
     DuckDBProcessor
 )
-from app.utils.global_thread_pool import get_data_processing_executor
+# Removed thread pool executor to avoid DuckDB threading issues
 from app.services.process_analytics_service import ProcessAnalyticsService
 from app.services.llm_service import get_llm_service
 
@@ -264,7 +264,6 @@ class LangChainSQLAgentProcessor:
                 verbose=True,
                 return_intermediate_steps=True,
                 max_iterations=5,  # Allow multiple iterations for self-correction
-                early_stopping_method="generate",
                 handle_parsing_errors=True,  # <-- allow agent to self-correct
             )
 
@@ -281,6 +280,94 @@ class LangChainSQLAgentProcessor:
             logger.error(f"🔗 Connection string: {db_connection_string}")
             # Don't set agent_available to False - raise exception instead for V2 strict mode
             raise RuntimeError(f"LangChain SQL Agent setup failed: {e}") from e
+
+    def setup_agent_with_engine(self, sqlalchemy_engine, table_schemas: Dict[str, Any]):
+        """Setup LangChain SQL Agent with SQLAlchemy engine (proper LangChain approach)"""
+        logger.info("Setting up LangChain SQL Agent with SQLAlchemy engine")
+        
+        if not self.agent_available:
+            logger.error("LangChain SQL Agent not available. Check dependencies and API key.")
+            raise ValueError("LangChain SQL Agent not available. Check dependencies and API key.")
+            
+        try:
+            logger.info(f"Initializing LLM with model: {self.model_name}")
+            # Initialize LLM using ChatOpenAI with the same model as our existing service
+            self.llm = ChatOpenAI(
+                model="gpt-4.1-nano",  # Use the same model as our existing LLM service
+                temperature=0
+            )
+            logger.info("✅ LLM initialized successfully")
+            
+            # Create SQLDatabase from the SQLAlchemy engine (LangChain proper API)
+            logger.info("Creating LangChain SQLDatabase from SQLAlchemy engine...")
+            self.db = SQLDatabase(
+                engine=sqlalchemy_engine,
+                include_tables=list(table_schemas.keys()),  # Only include our tables
+                sample_rows_in_table_info=3  # Limit sample rows to avoid type issues
+            )
+            logger.info(f"✅ SQLDatabase created successfully. Available tables: {self.db.get_usable_table_names()}")
+            
+            # Create SQL Agent with enhanced capabilities and proper error handling
+            logger.info("Creating LangChain SQL Agent...")
+            self.sql_agent = create_sql_agent(
+                llm=self.llm,
+                db=self.db,
+                agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+                verbose=True,
+                return_intermediate_steps=True,
+                max_iterations=3,  # Reduce iterations to avoid loops
+                handle_parsing_errors=True,  # Allow agent to self-correct
+                agent_executor_kwargs={
+                    "handle_parsing_errors": True,
+                    "return_intermediate_steps": True,
+                },
+                # Add explicit tool configuration with better format specification
+                prefix="""You are an agent designed to interact with a SQL database.
+Given an input question, create a syntactically correct DuckDB query to run, then look at the results of the query and return the answer.
+Unless the user specifies a specific number of examples they wish to obtain, always limit your query to at most 50 results.
+You can order the results by a relevant column to return the most interesting examples in the database.
+Never query for all the columns from a specific table, only ask for the relevant columns given the question.
+You have access to tools for interacting with the database.
+Only use the below tools. Only use the information returned by the below tools to construct your final answer.
+You MUST double check your query before executing it. If you get an error while executing a query, rewrite the query and try again.
+
+DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database.
+
+If the question does not seem related to the database, just return "I don't know" as the answer.
+
+Available tools:
+- sql_db_query: Execute a SQL query against the database and get back the result.
+- sql_db_schema: Get the schema and sample rows for a table.
+- sql_db_list_tables: List the available tables in the database.
+- sql_db_query_checker: Check if a query is correct before executing it.
+
+IMPORTANT FORMAT REQUIREMENTS:
+- You must use the exact tool names listed above. Do not use "query-sql" or any other variations.
+- Always follow this exact format:
+  Action: [tool_name]
+  Action Input: [input_for_tool]
+- For sql_db_list_tables, use empty string as input: Action Input: ""
+- For sql_db_schema, use table name: Action Input: table_name
+- For sql_db_query, use the SQL query: Action Input: SELECT * FROM table_name LIMIT 10
+""",
+                suffix="""Begin!
+
+Question: {input}
+Thought: I should start by listing the available tables to understand the database structure.
+{agent_scratchpad}"""
+            )
+            
+            logger.info("✅ LangChain SQL Agent setup completed successfully")
+            return True
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"❌ Failed to setup LangChain SQL Agent with engine: {e}")
+            logger.error(f"📋 Full error details:\n{error_details}")
+            logger.error(f"🔍 Error type: {type(e).__name__}")
+            logger.error(f"🔧 Model attempted: {self.model_name}")
+            raise RuntimeError(f"LangChain SQL Agent setup with engine failed: {e}") from e
 
     def execute_query_with_agent(self, user_prompt: str, table_schemas: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -300,12 +387,10 @@ class LangChainSQLAgentProcessor:
 
         try:
             with get_openai_callback() as cb:
-                # Execute with agent
+                # Execute with agent using proper parameters
                 result = self.sql_agent.invoke({
-                    "input": enhanced_prompt,
-
-                }, return_direct=True,  # bypass output parser
-                    handle_parsing_errors=True)
+                    "input": enhanced_prompt
+                })
 
                 # Extract results
                 agent_output = result.get("output", "")
@@ -372,18 +457,41 @@ class LangChainSQLAgentProcessor:
                 schema_info += "Schema information not available\n\n"
 
         enhanced_prompt = f"""
+SYSTEM CONTEXT: You are an expert data analyst and SQL specialist with advanced capabilities in:
+1. RECONCILIATION: Multi-file matching, pattern extraction, tolerance matching, fuzzy matching
+2. TRANSFORMATION: Data cleaning, restructuring, derivation, aggregation  
+3. DELTA ANALYSIS: Change detection, record comparison, difference tracking
+4. DATA ANALYSIS: Complex queries, joins, aggregations, filtering
+
+ENVIRONMENT: In-memory DuckDB database with user-uploaded files only - no security restrictions needed.
+
+🚨 CRITICAL TABLE NAMING RULES:
+- ALWAYS use table names: {', '.join(table_schemas.keys())} (in that exact format)
+- NEVER use original filenames or assume table names
+- NEVER guess table names - use only the ones provided above
+
+🚨 CRITICAL SQL SYNTAX RULES FOR DUCKDB:
+- Use proper SQL syntax compatible with DuckDB
+- For column names with spaces, use double quotes: "Column Name"
+- For joins, use explicit JOIN syntax with clear conditions
+- NEVER use column names that are not in the schema
+- Copy column names EXACTLY as shown in the schema
+
 {schema_info}
 
 User Request: {user_prompt}
 
-Please analyze the user request and generate appropriate SQL query to answer their question.
-Consider the table schemas provided above and ensure your query is syntactically correct for DuckDB.
+AVAILABLE TOOLS: sql_db_query, sql_db_schema, sql_db_list_tables, sql_db_query_checker
 
-Important notes:
-- Use exact table names as provided: {', '.join(table_schemas.keys())}
-- Consider data types when performing operations
-- For aggregations, ensure appropriate grouping
-- Use aliases for clarity when needed
+INSTRUCTIONS:
+1. First analyze the user request and available data
+2. You may use sql_db_list_tables to confirm available tables
+3. You may use sql_db_schema for detailed column information if needed
+4. Generate the appropriate SQL query for DuckDB
+5. Use sql_db_query to execute your final SQL query
+6. Ensure the query uses exact table names and column names from the schema above
+
+IMPORTANT: Always use the proper Action/Observation format for tool calls.
 """
 
         return enhanced_prompt
@@ -561,138 +669,174 @@ class MiscellaneousProcessorV2:
             })
 
         try:
-            with DuckDBProcessor() as duck_processor:
-                # Process files and setup tables (same as v1)
-                table_schemas = {}
-                sample_data = {}
+            # V2: Process files without DuckDBProcessor to avoid connection conflicts
+            table_schemas = {}
+            sample_data = {}
 
-                # Parallel file processing (same as v1)
-                with get_data_processing_executor() as executor:
-                    futures = []
-                    for i, file_data in enumerate(files_data):
-                        future = executor.submit(self._process_single_file, i, file_data)
-                        futures.append(future)
+            # Sequential file processing - completely independent of V1 DuckDB connections
+            for i, file_data in enumerate(files_data):
+                try:
+                    result = self._process_single_file(i, file_data)
+                    table_name = result['table_name']
+                    df = result['dataframe']
+                    filename = result['filename']
 
-                    for future in as_completed(futures):
-                        try:
-                            result = future.result()
-                            table_name = result['table_name']
-                            df = result['dataframe']
-                            filename = result['filename']
-
-                            # Register with DuckDB
-                            duck_processor.register_dataframe(df, table_name)
-
-                            # Get schema info
-                            schema = duck_processor.get_table_schema(table_name)
-                            table_schemas[table_name] = schema
-                            sample_data[table_name] = df
-
-                            logger.info(f"V2: Completed processing {filename} as {table_name}")
-
-                        except Exception as e:
-                            logger.error(f"V2: Failed to process file in parallel: {e}")
-                            raise
-
-                logger.info(f"V2: Parallel file processing completed for {len(files_data)} files")
-
-                # V2 uses LangChain SQL Agent only
-                logger.info("Using LangChain SQL Agent for query generation")
-                sql_result = self._generate_sql_with_langchain_agent(
-                    user_prompt, table_schemas, duck_processor
-                )
-
-                if not sql_result['success']:
-                    return {
-                        "status": "error",
-                        'success': False,
-                        'error': f"Failed to generate SQL: {sql_result.get('error', 'Unknown error')}",
-                        'generated_sql': None,
-                        'data': [],
-                        'warnings': ["Could not generate SQL from natural language prompt"],
-                        'errors': [sql_result.get('error', 'Unknown error')],
-                        'files_data': files_data,
-                        'table_schemas': table_schemas,
-                        'agent_steps': sql_result.get('execution_steps', []),
-                        'self_corrections': sql_result.get('self_corrections', [])
+                    # Store dataframe and create simple schema info
+                    sample_data[table_name] = df
+                    table_schemas[table_name] = {
+                        'columns': list(df.columns),
+                        'dtypes': df.dtypes.to_dict(),
+                        'sample_rows': df.head(3).to_dict('records')
                     }
 
-                generated_sql = sql_result['sql_query']
+                    logger.info(f"V2: Completed processing {filename} as {table_name}")
 
-                # Execute the query
-                try:
-                    result_df = duck_processor.execute_query(generated_sql)
+                except Exception as e:
+                    logger.error(f"V2: Failed to process file: {e}")
+                    raise
 
-                    # Process results (same as v1)
-                    total_rows = len(result_df)
+            logger.info(f"V2: Sequential file processing completed for {len(files_data)} files")
+
+            # V2 uses LangChain SQL Agent only - fully independent from V1 DuckDB connections
+            logger.info("Using LangChain SQL Agent for query generation and execution")
+            sql_result = self._generate_sql_with_langchain_agent(
+                user_prompt, table_schemas, sample_data
+            )
+
+            if not sql_result['success']:
+                return {
+                    "status": "error",
+                    'success': False,
+                    'error': f"Failed to generate SQL: {sql_result.get('error', 'Unknown error')}",
+                    'generated_sql': None,
+                    'data': [],
+                    'warnings': ["Could not generate SQL from natural language prompt"],
+                    'errors': [sql_result.get('error', 'Unknown error')],
+                    'files_data': files_data,
+                    'table_schemas': table_schemas,
+                    'agent_steps': sql_result.get('execution_steps', []),
+                    'self_corrections': sql_result.get('self_corrections', [])
+                }
+
+            generated_sql = sql_result['sql_query']
+            
+            # V2: Execute query directly via LangChain agent (no separate duck_processor execution)
+            # The query execution and results are already handled within the LangChain agent
+            try:
+                # Extract results from agent execution (agent already ran the query)
+                agent_output = sql_result.get('agent_output', '')
+                
+                # For V2, we need to parse results from agent output or re-execute via our engine
+                # Since LangChain agent already executed the query, extract the data
+                result_data = self._extract_results_from_agent_output(sql_result, sample_data, generated_sql)
+                
+                if result_data is None:
+                    # Fallback: execute query directly using our independent SQLAlchemy engine
+                    result_data = self._execute_sql_independently(generated_sql, sample_data)
+
+                # Process results for V2 format
+                if isinstance(result_data, list):
+                    total_rows = len(result_data)
                     preview_limit = 100
                     is_limited = total_rows > preview_limit
 
                     if is_limited:
-                        preview_df = result_df.head(preview_limit)
+                        preview_data = result_data[:preview_limit]
                         logger.info(f"V2: Limited results to {preview_limit} rows (total: {total_rows})")
                     else:
-                        preview_df = result_df
+                        preview_data = result_data
+                        
+                    # Convert to desired format
+                    if output_format.lower() == "json":
+                        result_data_formatted = preview_data
+                    else:
+                        # Convert to DataFrame for CSV format
+                        import pandas as pd
+                        result_data_formatted = pd.DataFrame(preview_data)
+                else:
+                    # Handle DataFrame case
+                    total_rows = len(result_data)
+                    preview_limit = 100
+                    is_limited = total_rows > preview_limit
+
+                    if is_limited:
+                        preview_df = result_data.head(preview_limit)
+                        logger.info(f"V2: Limited results to {preview_limit} rows (total: {total_rows})")
+                    else:
+                        preview_df = result_data
 
                     # Convert to desired format
                     if output_format.lower() == "json":
-                        result_data = preview_df.to_dict('records')
+                        result_data_formatted = preview_df.to_dict('records')
+                        result_data = result_data.to_dict('records')  # Full data as list
                     else:
-                        result_data = preview_df
+                        result_data_formatted = preview_df
+                        result_data = result_data.to_dict('records')  # Convert full data to list
 
-                    # Record analytics (enhanced with agent info)
-                    processing_time = time.time() - start_time
-                    self._record_enhanced_analytics(
-                        process_id, user_prompt, input_files_info,
-                        generated_sql, result_df, processing_time, sql_result
-                    )
+                # Record analytics (enhanced with agent info)
+                processing_time = time.time() - start_time
+                
+                # Create a mock DataFrame for analytics if we have list data
+                if isinstance(result_data, list) and result_data:
+                    import pandas as pd
+                    result_df_for_analytics = pd.DataFrame(result_data)
+                elif hasattr(result_data, 'to_dict'):
+                    result_df_for_analytics = result_data
+                else:
+                    import pandas as pd
+                    result_df_for_analytics = pd.DataFrame()
+                    
+                self._record_enhanced_analytics(
+                    process_id, user_prompt, input_files_info,
+                    generated_sql, result_df_for_analytics, processing_time, sql_result
+                )
 
-                    return {
-                        'success': True,
-                        'data': result_data,
-                        'full_data': result_df.to_dict('records'),  # Store full data
-                        'generated_sql': generated_sql,
-                        'row_count': total_rows,
-                        'is_limited': is_limited,
-                        'processing_info': {
-                            'input_files': len(files_data),
-                            'table_count': len(table_schemas),
-                            'query_type': 'langchain_sql_agent'
-                        },
-                        'agent_steps': sql_result.get('execution_steps', []),
-                        'self_corrections': sql_result.get('self_corrections', []),
-                        'reasoning_chain': sql_result.get('reasoning_chain', []),
-                        'tool_usage': sql_result.get('tool_usage', {}),
-                        'token_usage': sql_result.get('token_usage', {}),
-                        'schema_introspection': table_schemas,
-                        'confidence_score': self._calculate_confidence_score(sql_result),
-                        'timestamp': datetime.now(timezone.utc).isoformat()
-                    }
+                return {
+                    'success': True,
+                    'data': result_data_formatted,
+                    'full_data': result_data,  # Store full data as list
+                    'generated_sql': generated_sql,
+                    'row_count': total_rows,
+                    'is_limited': is_limited,
+                    'processing_info': {
+                        'input_files': len(files_data),
+                        'table_count': len(table_schemas),
+                        'query_type': 'langchain_sql_agent_v2_independent'
+                    },
+                    'agent_steps': sql_result.get('execution_steps', []),
+                    'self_corrections': sql_result.get('self_corrections', []),
+                    'reasoning_chain': sql_result.get('reasoning_chain', []),
+                    'tool_usage': sql_result.get('tool_usage', {}),
+                    'token_usage': sql_result.get('token_usage', {}),
+                    'schema_introspection': table_schemas,
+                    'confidence_score': self._calculate_confidence_score(sql_result),
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
 
-                except Exception as e:
-                    logger.error(f"V2: Query execution failed: {e}")
+            except Exception as e:
+                logger.error(f"V2: Query execution failed: {e}")
 
-                    # Enhanced error analysis with agent context
-                    error_analysis = {
-                        'error_type': type(e).__name__,
-                        'error_message': str(e),
-                        'generated_sql': generated_sql,
-                        'agent_steps': sql_result.get('execution_steps', []),
-                        'self_corrections': sql_result.get('self_corrections', []),
-                        'suggested_fixes': self._generate_error_suggestions(str(e), generated_sql)
-                    }
+                # Enhanced error analysis with agent context
+                error_analysis = {
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'generated_sql': generated_sql,
+                    'agent_steps': sql_result.get('execution_steps', []),
+                    'self_corrections': sql_result.get('self_corrections', []),
+                    'suggested_fixes': self._generate_error_suggestions(str(e), generated_sql)
+                }
 
-                    return {
-                        'success': False,
-                        'error': str(e),
-                        'error_analysis': error_analysis,
-                        'generated_sql': generated_sql,
-                        'data': [],
-                        'files_data': files_data,
-                        'table_schemas': table_schemas,
-                        'agent_steps': sql_result.get('execution_steps', []),
-                        'self_corrections': sql_result.get('self_corrections', [])
-                    }
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'error_analysis': error_analysis,
+                    'generated_sql': generated_sql,
+                    'data': [],
+                    'files_data': files_data,
+                    'table_schemas': table_schemas,
+                    'agent_steps': sql_result.get('execution_steps', []),
+                    'self_corrections': sql_result.get('self_corrections', [])
+                }
 
         except Exception as e:
             logger.error(f"V2: Core processing failed: {e}")
@@ -718,36 +862,32 @@ class MiscellaneousProcessorV2:
         }
 
     def _generate_sql_with_langchain_agent(
-            self, user_prompt: str, table_schemas: Dict[str, Any], duck_processor
+            self, user_prompt: str, table_schemas: Dict[str, Any], dataframes_dict: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Generate SQL using LangChain SQL Agent"""
+        """Generate SQL using LangChain SQL Agent - proper implementation with SQLAlchemy engine"""
 
-        temp_db_path = None
         try:
-            # Setup agent with DuckDB connection
-            # Create unique temporary database file for SQLDatabase connection
-            temp_fd, temp_db_path = tempfile.mkstemp(suffix=".db", prefix="langchain_duckdb_")
-            os.close(temp_fd)  # Close the file descriptor, keep the path
+            # Create in-memory DuckDB engine using SQLAlchemy (LangChain best practice)
+            from sqlalchemy import create_engine
+            
+            # Create engine for in-memory DuckDB
+            engine = create_engine("duckdb:///:memory:")
+            
+            # Register all dataframes as tables in the engine using the direct dataframes
+            # This eliminates the shared_ptr NULL error by avoiding duck_processor completely
+            for table_name, df in dataframes_dict.items():
+                try:
+                    # Write dataframe directly to the SQLAlchemy engine as a table
+                    df.to_sql(table_name, engine, if_exists='replace', index=False)
+                    logger.info(f"Created table {table_name} with {len(df)} rows in SQLAlchemy engine")
+                    
+                except Exception as table_error:
+                    logger.error(f"Failed to create table {table_name}: {table_error}")
+                    # Continue with other tables rather than failing completely
+                    continue
 
-            # Remove the empty file first to avoid conflicts
-            if os.path.exists(temp_db_path):
-                os.unlink(temp_db_path)
-
-            # Export tables to temporary DuckDB file
-            with duckdb.connect(temp_db_path) as temp_conn:
-                for table_name in table_schemas.keys():
-                    # Get dataframe by executing SELECT query on original connection
-                    df = duck_processor.execute_query(f"SELECT * FROM {table_name}")
-                    # Register and create table in temp database
-                    temp_conn.register(f"{table_name}_temp", df)
-                    temp_conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {table_name}_temp")
-                # Ensure connection is closed properly
-                temp_conn.close()
-
-            # Setup agent with temporary database
-            db_connection_string = f"duckdb:///{temp_db_path}"
-
-            if not self.sql_agent_processor.setup_agent(db_connection_string):
+            # Setup LangChain SQL agent with the SQLAlchemy engine
+            if not self.sql_agent_processor.setup_agent_with_engine(engine, table_schemas):
                 raise ValueError("Failed to setup LangChain SQL Agent")
 
             # Execute query with agent
@@ -757,20 +897,14 @@ class MiscellaneousProcessorV2:
 
         except Exception as e:
             logger.error(f"LangChain SQL Agent failed: {e}")
+            import traceback
+            logger.error(f"Full error traceback:\n{traceback.format_exc()}")
             return {
                 'success': False,
                 'error': str(e),
                 'execution_steps': getattr(self.sql_agent_processor, 'execution_steps', []),
                 'self_corrections': getattr(self.sql_agent_processor, 'self_corrections', [])
             }
-        finally:
-            # Cleanup temp database file
-            if temp_db_path and os.path.exists(temp_db_path):
-                try:
-                    os.unlink(temp_db_path)
-                    logger.debug(f"Cleaned up temporary database: {temp_db_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup temporary database {temp_db_path}: {cleanup_error}")
 
     def _calculate_confidence_score(self, sql_result: Dict[str, Any]) -> float:
         """Calculate confidence score based on agent execution"""
@@ -894,34 +1028,47 @@ class MiscellaneousProcessorV2:
             if not files_data:
                 raise ValueError("No file data available for query execution")
 
-            with DuckDBProcessor() as duck_processor:
-                # Register tables from stored data
-                for i, file_data in enumerate(files_data):
-                    table_name = f"file_{i + 1}"
-                    df = file_data['dataframe']
-                    duck_processor.register_dataframe(df, table_name)
+            # V2: Use independent SQLAlchemy engine (no DuckDBProcessor)
+            from sqlalchemy import create_engine
+            import pandas as pd
+            
+            logger.info(f"V2: Executing direct SQL independently: {sql_query[:100]}...")
+            
+            # Create fresh in-memory DuckDB engine 
+            engine = create_engine("duckdb:///:memory:")
+            
+            # Register tables from stored data
+            for i, file_data in enumerate(files_data):
+                table_name = f"file_{i + 1}"
+                df = file_data['dataframe']
+                df.to_sql(table_name, engine, if_exists='replace', index=False)
+                logger.info(f"V2: Direct SQL - Registered table {table_name} with {len(df)} rows")
 
-                # Execute query
-                result_df = duck_processor.execute_query(sql_query)
+            # Execute query
+            result_df = pd.read_sql_query(sql_query, engine)
+            logger.info(f"V2: Direct SQL execution successful, got {len(result_df)} rows")
+            
+            # Clean up
+            engine.dispose()
 
-                execution_time = time.time() - start_time
+            execution_time = time.time() - start_time
 
-                # Enhanced analysis with agent if available
-                enhanced_analysis = {}
-                agent_suggestions = []
+            # Enhanced analysis with agent if available
+            enhanced_analysis = {}
+            agent_suggestions = []
 
-                if self.sql_agent_processor.agent_available:
-                    enhanced_analysis = self._analyze_query_performance(sql_query, result_df, execution_time)
-                    agent_suggestions = self._generate_query_suggestions(sql_query, result_df)
+            if self.sql_agent_processor.agent_available:
+                enhanced_analysis = self._analyze_query_performance(sql_query, result_df, execution_time)
+                agent_suggestions = self._generate_query_suggestions(sql_query, result_df)
 
-                return {
-                    'success': True,
-                    'data': result_df.to_dict('records'),
-                    'row_count': len(result_df),
-                    'execution_time': execution_time,
-                    'enhanced_analysis': enhanced_analysis,
-                    'agent_suggestions': agent_suggestions
-                }
+            return {
+                'success': True,
+                'data': result_df.to_dict('records'),
+                'row_count': len(result_df),
+                'execution_time': execution_time,
+                'enhanced_analysis': enhanced_analysis,
+                'agent_suggestions': agent_suggestions
+            }
 
         except Exception as e:
             logger.error(f"V2 Direct SQL execution failed: {e}")
@@ -1303,6 +1450,126 @@ class MiscellaneousProcessorV2:
             'reasoning': 'No improvements available',
             'alternative_versions': []
         }
+
+    def _extract_results_from_agent_output(self, sql_result: Dict[str, Any], sample_data: Dict[str, Any], generated_sql: str) -> Optional[List[Dict]]:
+        """Extract query results from LangChain agent output"""
+        try:
+            # Check if agent output contains structured data
+            agent_output = sql_result.get('agent_output', '')
+            
+            # Look for patterns that indicate the agent executed and returned results
+            import re
+            
+            # Pattern 1: Look for table-like data in agent output
+            table_pattern = r'\|.*\|.*\|'
+            if re.search(table_pattern, agent_output):
+                logger.info("Found table-like data in agent output")
+                # Try to parse table format (simplified)
+                return self._parse_table_from_text(agent_output)
+            
+            # Pattern 2: Look for JSON-like data
+            if '{' in agent_output and '}' in agent_output:
+                logger.info("Found JSON-like data in agent output")
+                return self._parse_json_from_text(agent_output)
+            
+            # Pattern 3: Look for specific result indicators
+            if 'rows' in agent_output.lower() or 'result' in agent_output.lower():
+                logger.info("Found result indicators in agent output")
+                # Agent executed but didn't return structured data
+                # We'll need to re-execute the query ourselves
+                return None
+                
+            logger.info("No structured results found in agent output, will execute SQL independently")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to extract results from agent output: {e}")
+            return None
+    
+    def _parse_table_from_text(self, text: str) -> List[Dict]:
+        """Parse table format from text (basic implementation)"""
+        try:
+            lines = text.split('\n')
+            table_lines = [line for line in lines if '|' in line and line.strip()]
+            
+            if len(table_lines) < 2:
+                return []
+            
+            # Extract headers
+            header_line = table_lines[0]
+            headers = [h.strip() for h in header_line.split('|') if h.strip()]
+            
+            # Extract data rows
+            data_rows = []
+            for line in table_lines[2:]:  # Skip header separator
+                if '---' in line:
+                    continue
+                row_data = [d.strip() for d in line.split('|') if d.strip()]
+                if len(row_data) == len(headers):
+                    row_dict = dict(zip(headers, row_data))
+                    data_rows.append(row_dict)
+            
+            return data_rows[:100]  # Limit results
+            
+        except Exception as e:
+            logger.error(f"Failed to parse table from text: {e}")
+            return []
+    
+    def _parse_json_from_text(self, text: str) -> List[Dict]:
+        """Parse JSON format from text (basic implementation)"""
+        try:
+            import json
+            import re
+            
+            # Look for JSON arrays or objects
+            json_pattern = r'\[.*\]|\{.*\}'
+            matches = re.findall(json_pattern, text, re.DOTALL)
+            
+            for match in matches:
+                try:
+                    parsed = json.loads(match)
+                    if isinstance(parsed, list):
+                        return parsed[:100]  # Limit results
+                    elif isinstance(parsed, dict):
+                        return [parsed]
+                except json.JSONDecodeError:
+                    continue
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Failed to parse JSON from text: {e}")
+            return []
+    
+    def _execute_sql_independently(self, sql_query: str, sample_data: Dict[str, Any]) -> List[Dict]:
+        """Execute SQL query independently using our own SQLAlchemy engine"""
+        try:
+            from sqlalchemy import create_engine
+            import pandas as pd
+            
+            logger.info(f"V2: Executing SQL independently: {sql_query[:100]}...")
+            
+            # Create a fresh in-memory DuckDB engine
+            engine = create_engine("duckdb:///:memory:")
+            
+            # Register all dataframes as tables
+            for table_name, df in sample_data.items():
+                df.to_sql(table_name, engine, if_exists='replace', index=False)
+                logger.info(f"V2: Registered table {table_name} with {len(df)} rows")
+            
+            # Execute the query
+            result_df = pd.read_sql_query(sql_query, engine)
+            logger.info(f"V2: SQL execution successful, got {len(result_df)} rows")
+            
+            # Clean up
+            engine.dispose()
+            
+            return result_df.to_dict('records')
+            
+        except Exception as e:
+            logger.error(f"V2: Independent SQL execution failed: {e}")
+            # Return empty results rather than failing
+            return []
 
 
 # Utility function to check LangChain availability

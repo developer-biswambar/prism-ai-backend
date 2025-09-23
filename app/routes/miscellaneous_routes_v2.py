@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 # Create router with v2 prefix
 router = APIRouter(prefix="/api/miscellaneous/v2", tags=["miscellaneous-v2"])
 
+# Global V2 results storage (same pattern as V1 saved_prompts_storage)
+v2_results_storage = {}
+
 
 @router.post("/process/", response_model=MiscellaneousResponse)
 def process_miscellaneous_data_v2(request: MiscellaneousRequest):
@@ -96,8 +99,9 @@ def process_miscellaneous_data_v2(request: MiscellaneousRequest):
                 'version': 'v2_langchain_agent'
             }
         
-        # Store results for later retrieval
-        processor.store_results(process_id, result)
+        # Store results in global storage for later retrieval
+        v2_results_storage[process_id] = result
+        logger.info(f"V2: Stored results for process {process_id} in global storage")
         
         # Calculate processing time
         processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -132,12 +136,11 @@ def get_miscellaneous_results_v2(
     """Get results from v2 miscellaneous data processing with pagination"""
     
     try:
-        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
-        
-        processor = MiscellaneousProcessorV2()
-        results = processor.get_results(process_id)
+        # Retrieve from global storage instead of processor instance
+        results = v2_results_storage.get(process_id)
         
         if not results:
+            logger.warning(f"V2: Process ID {process_id} not found in global storage")
             raise HTTPException(status_code=404, detail="V2 Process ID not found")
         
         # Handle pagination (same logic as v1)
@@ -196,12 +199,11 @@ def download_miscellaneous_results_v2(
     """Download results from v2 miscellaneous data processing"""
     
     try:
-        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
-        
-        processor = MiscellaneousProcessorV2()
-        results = processor.get_results(process_id)
+        # Retrieve from global storage instead of processor instance
+        results = v2_results_storage.get(process_id)
         
         if not results:
+            logger.warning(f"V2: Process ID {process_id} not found in global storage for download")
             raise HTTPException(status_code=404, detail="V2 Process ID not found")
         
         # Get the data
@@ -261,12 +263,11 @@ def get_agent_execution_info(process_id: str):
     - Tool usage statistics
     """
     try:
-        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
-        
-        processor = MiscellaneousProcessorV2()
-        results = processor.get_results(process_id)
+        # Retrieve from global storage instead of processor instance
+        results = v2_results_storage.get(process_id)
         
         if not results:
+            logger.warning(f"V2: Process ID {process_id} not found in global storage for agent-info")
             raise HTTPException(status_code=404, detail="V2 Process ID not found")
         
         agent_info = {
@@ -299,12 +300,11 @@ def get_miscellaneous_results_summary_v2(process_id: str):
     """Get summary of v2 miscellaneous data processing results"""
     
     try:
-        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
-        
-        processor = MiscellaneousProcessorV2()
-        results = processor.get_results(process_id)
+        # Retrieve from global storage instead of processor instance
+        results = v2_results_storage.get(process_id)
         
         if not results:
+            logger.warning(f"V2: Process ID {process_id} not found in global storage for summary")
             raise HTTPException(status_code=404, detail="V2 Process ID not found")
         
         # Enhanced summary with V2 agent information
@@ -431,13 +431,15 @@ def execute_direct_query_v2(request: dict):
         if not process_id:
             raise HTTPException(status_code=400, detail="Process ID is required")
         
-        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
-        
-        processor = MiscellaneousProcessorV2()
-        results = processor.get_results(process_id)
+        # Retrieve from global storage instead of processor instance
+        results = v2_results_storage.get(process_id)
         
         if not results:
+            logger.warning(f"V2: Process ID {process_id} not found in global storage for execute-query")
             raise HTTPException(status_code=404, detail="V2 Process ID not found")
+        
+        from app.services.miscellaneous_service_v2 import MiscellaneousProcessorV2
+        processor = MiscellaneousProcessorV2()
         
         # Execute query with enhanced error handling
         execution_result = processor.execute_direct_sql_v2(sql_query, results)
